@@ -1,0 +1,6 @@
+{
+  "name": "AutoPost Shorts & TikTok Telegram Mini App",
+  "description": "Telegram Mini App для автопостинга и планирования коротких видео в YouTube Shorts и TikTok с валидацией 9:16, пресетами и интеграцией с Supabase.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
