@@ -16,6 +16,7 @@ import {
 } from 'lucide-react';
 import { IntegrationStatus, TelegramUser } from '../types';
 import { api } from '../lib/api';
+import { supabase } from '../lib/supabase';
 import { hapticFeedback } from '../lib/telegram';
 
 interface IntegrationsTabProps {
@@ -33,8 +34,34 @@ export const IntegrationsTab: React.FC<IntegrationsTabProps> = ({
 }) => {
   const [connectingPlatform, setConnectingPlatform] = useState<string | null>(null);
   const [copiedField, setCopiedField] = useState<string | null>(null);
+  const [supabaseUser, setSupabaseUser] = useState<any>(null);
 
-  // Listen for OAuth success message from popup
+  // Listen for Supabase auth state changes & load initial session
+  useEffect(() => {
+    if (!supabase) return;
+
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      if (session?.user) {
+        setSupabaseUser(session.user);
+      }
+    });
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      if (session?.user) {
+        setSupabaseUser(session.user);
+        hapticFeedback.success();
+        onRefresh();
+      } else {
+        setSupabaseUser(null);
+      }
+    });
+
+    return () => {
+      subscription.unsubscribe();
+    };
+  }, [onRefresh]);
+
+  // Listen for OAuth success message from popup (for Google/YouTube)
   useEffect(() => {
     const handleMessage = (event: MessageEvent) => {
       const origin = event.origin;
@@ -51,8 +78,40 @@ export const IntegrationsTab: React.FC<IntegrationsTabProps> = ({
     return () => window.removeEventListener('message', handleMessage);
   }, [onRefresh]);
 
-  // Connect via OAuth Popup
+  // Direct TikTok OAuth via Supabase
+  const handleTikTokAuth = async () => {
+    hapticFeedback.medium();
+    setConnectingPlatform('tiktok');
+
+    if (!supabase) {
+      alert('Supabase client не инициализирован. Проверьте переменные VITE_SUPABASE_URL и VITE_SUPABASE_ANON_KEY в Netlify / .env.');
+      setConnectingPlatform(null);
+      return;
+    }
+
+    const { data, error } = await supabase.auth.signInWithOAuth({
+      provider: 'tiktok' as any,
+      options: {
+        redirectTo: window.location.origin,
+        // Критично важно запросить скоупы для публикации видео!
+        scopes: 'user.info.basic,user.info.profile,video.upload,video.list' 
+      }
+    });
+
+    if (error) {
+      console.error('Ошибка входа:', error.message);
+      alert(`Ошибка входа через TikTok: ${error.message}`);
+      setConnectingPlatform(null);
+      hapticFeedback.error();
+    }
+  };
+
+  // Connect via Google OAuth Popup
   const handleConnect = async (platform: 'google' | 'tiktok') => {
+    if (platform === 'tiktok') {
+      return handleTikTokAuth();
+    }
+
     hapticFeedback.medium();
     setConnectingPlatform(platform);
 
@@ -91,7 +150,11 @@ export const IntegrationsTab: React.FC<IntegrationsTabProps> = ({
     }
     hapticFeedback.light();
     try {
-      await api.disconnectIntegration(platform);
+      if (platform === 'tiktok' && supabase) {
+        await supabase.auth.signOut().catch(() => {});
+        setSupabaseUser(null);
+      }
+      await api.disconnectIntegration(platform).catch(() => {});
       hapticFeedback.success();
       onRefresh();
     } catch (err: any) {
@@ -108,7 +171,18 @@ export const IntegrationsTab: React.FC<IntegrationsTabProps> = ({
   };
 
   const isYtConnected = integrations?.youtube?.connected;
-  const isTtConnected = integrations?.tiktok?.connected;
+  const isTtConnected =
+    integrations?.tiktok?.connected ||
+    supabaseUser?.app_metadata?.provider === 'tiktok' ||
+    supabaseUser?.identities?.some((i: any) => i.provider === 'tiktok');
+  
+  const ttDisplayName =
+    integrations?.tiktok?.display_name ||
+    supabaseUser?.user_metadata?.full_name ||
+    supabaseUser?.user_metadata?.name ||
+    supabaseUser?.email ||
+    '@tiktok_creator';
+
   const currentOrigin = typeof window !== 'undefined' ? window.location.origin : 'https://your-domain.com';
 
   return (
@@ -254,7 +328,7 @@ export const IntegrationsTab: React.FC<IntegrationsTabProps> = ({
                 <div className="flex justify-between items-center text-[#708499]">
                   <span>Аккаунт:</span>
                   <span className="font-semibold text-cyan-300">
-                    {integrations?.tiktok?.display_name || '@tiktok_creator'}
+                    {ttDisplayName}
                   </span>
                 </div>
                 <div className="flex justify-between items-center text-[#708499]">
