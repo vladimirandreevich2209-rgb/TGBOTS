@@ -12,17 +12,17 @@ const PORT = 3000;
 app.use(express.json({ limit: '100mb' }));
 app.use(express.urlencoded({ extended: true, limit: '100mb' }));
 
-// Supabase client initialization (if credentials provided)
+// Supabase / Database client initialization (supporting DATA_ENDPOINT, SECRET_KEY, PUBLIC_KEY)
 let supabase: SupabaseClient | null = null;
-const supabaseUrl = process.env.SUPABASE_URL;
-const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY;
+const supabaseUrl = process.env.DATA_ENDPOINT || process.env.SUPABASE_URL;
+const supabaseKey = process.env.SECRET_KEY || process.env.PUBLIC_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY;
 
 if (supabaseUrl && supabaseKey && !supabaseUrl.includes('your-project')) {
   try {
     supabase = createClient(supabaseUrl, supabaseKey);
-    console.log('[Supabase] Initialized successfully with', supabaseUrl);
+    console.log('[Database/Supabase] Initialized successfully with endpoint:', supabaseUrl);
   } catch (err) {
-    console.warn('[Supabase] Initialization error:', err);
+    console.warn('[Database/Supabase] Initialization error:', err);
   }
 }
 
