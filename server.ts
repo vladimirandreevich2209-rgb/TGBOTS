@@ -933,8 +933,8 @@ async function startServer() {
   });
 }
 
-// Only launch standalone listener when not in Vercel serverless environment
-if (process.env.VERCEL !== '1') {
+// Only launch standalone listener when not in Vercel or Netlify serverless environment
+if (process.env.VERCEL !== '1' && process.env.NETLIFY !== 'true' && !process.env.AWS_LAMBDA_FUNCTION_NAME) {
   startServer();
 }
 
