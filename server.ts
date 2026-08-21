@@ -12,10 +12,10 @@ const PORT = 3000;
 app.use(express.json({ limit: '100mb' }));
 app.use(express.urlencoded({ extended: true, limit: '100mb' }));
 
-// Supabase / Database client initialization (supporting DATA_ENDPOINT, SECRET_KEY, PUBLIC_KEY)
+// Supabase / Database client initialization (supporting DATA_ENDPOINT, ROLE_KEY, PUBLIC_KEY)
 let supabase: SupabaseClient | null = null;
 const supabaseUrl = process.env.DATA_ENDPOINT || process.env.SUPABASE_URL;
-const supabaseKey = process.env.SECRET_KEY || process.env.PUBLIC_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY;
+const supabaseKey = process.env.ROLE_KEY || process.env.SECRET_KEY || process.env.PUBLIC_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY;
 
 if (supabaseUrl && supabaseKey && !supabaseUrl.includes('your-project')) {
   try {
