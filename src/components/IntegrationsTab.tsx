@@ -80,9 +80,13 @@ export const IntegrationsTab: React.FC<IntegrationsTabProps> = ({
     setConnectingPlatform('youtube');
 
     const telegramId = getTelegramId();
-    const clientId =
-      import.meta.env.VITE_GOOGLE_CLIENT_ID ||
-      '1052670743516-uom2vckq7a9v4j4smb2j8gq9m3j2h9m8.apps.googleusercontent.com';
+    const clientId = import.meta.env.VITE_GOOGLE_CLIENT_ID;
+    
+    if (!clientId) {
+      alert('Ошибка: VITE_GOOGLE_CLIENT_ID не настроен в переменных окружения.');
+      setConnectingPlatform(null);
+      return;
+    }
     
     // Use deployed Cloudflare Pages URL or current origin for callback
     const redirectUri =

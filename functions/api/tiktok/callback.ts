@@ -83,44 +83,8 @@ export const onRequestGet: PagesFunction<Env> = async (context) => {
         .run();
     }
 
-    const html = `<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="utf-8">
-  <title>TikTok подключен!</title>
-  <style>
-    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #17212B; color: #fff; text-align: center; padding: 40px 20px; }
-    .card { max-width: 400px; margin: 0 auto; background: #242F3D; padding: 24px; border-radius: 16px; box-shadow: 0 4px 20px rgba(0,0,0,0.3); }
-    h2 { color: #22d3ee; margin-top: 0; }
-    p { color: #708499; font-size: 14px; }
-    a { display: inline-block; margin-top: 16px; padding: 10px 20px; background: #3390EC; color: #fff; text-decoration: none; border-radius: 10px; font-weight: bold; }
-  </style>
-</head>
-<body>
-  <div class="card">
-    <h2>✓ TikTok подключен!</h2>
-    <p>Авторизация прошла успешно. Токен сохранен в Cloudflare D1.</p>
-    <a href="${appOrigin}">Перейти в ShortsMaster</a>
-  </div>
-  <script>
-    try {
-      if (window.opener) {
-        window.opener.postMessage({ type: 'OAUTH_AUTH_SUCCESS', platform: 'tiktok' }, '*');
-        setTimeout(() => window.close(), 1200);
-      } else {
-        setTimeout(() => { window.location.href = '${appOrigin}'; }, 1500);
-      }
-    } catch (e) {
-      window.location.href = '${appOrigin}';
-    }
-  </script>
-</body>
-</html>`;
-
-    return new Response(html, {
-      status: 200,
-      headers: { 'Content-Type': 'text/html; charset=utf-8' },
-    });
+    // 302 redirect back to the application
+    return Response.redirect('https://shortsmaster.pages.dev', 302);
   } catch (err: any) {
     console.error('Error in TikTok callback:', err);
     return new Response(
