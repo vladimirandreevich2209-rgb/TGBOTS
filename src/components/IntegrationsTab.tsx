@@ -89,57 +89,98 @@ export const IntegrationsTab: React.FC<IntegrationsTabProps> = ({
       return;
     }
 
-    const { data, error } = await supabase.auth.signInWithOAuth({
-      provider: 'tiktok' as any,
-      options: {
-        redirectTo: window.location.origin,
-        // Критично важно запросить скоупы для публикации видео!
-        scopes: 'user.info.basic,user.info.profile,video.upload,video.list' 
-      }
-    });
+    try {
+      // Use skipBrowserRedirect to safely handle popups and prevent iframe blocking (chromewebdata error)
+      const { data, error } = await supabase.auth.signInWithOAuth({
+        provider: 'tiktok' as any,
+        options: {
+          redirectTo: window.location.origin,
+          scopes: 'user.info.basic,user.info.profile,video.upload,video.list',
+          skipBrowserRedirect: true,
+        }
+      });
 
-    if (error) {
-      console.error('Ошибка входа:', error.message);
-      alert(`Ошибка входа через TikTok: ${error.message}`);
-      setConnectingPlatform(null);
+      if (error) {
+        throw error;
+      }
+
+      if (data?.url) {
+        // Open OAuth in popup or new tab to avoid iframe X-Frame-Options blocking
+        const isIframe = window !== window.parent;
+        if (isIframe) {
+          const popup = window.open(data.url, '_blank', 'width=600,height=750,scrollbars=yes,status=yes');
+          if (!popup) {
+            window.location.href = data.url;
+          }
+        } else {
+          window.location.href = data.url;
+        }
+      }
+    } catch (err: any) {
+      console.error('Ошибка входа TikTok:', err);
+      alert(`Ошибка входа через TikTok: ${err.message || err}`);
       hapticFeedback.error();
+    } finally {
+      setConnectingPlatform(null);
     }
   };
 
-  // Connect via Google OAuth Popup
-  const handleConnect = async (platform: 'google' | 'tiktok') => {
-    if (platform === 'tiktok') {
-      return handleTikTokAuth();
+  // Direct Google/YouTube OAuth via Supabase
+  const handleGoogleAuth = async () => {
+    hapticFeedback.medium();
+    setConnectingPlatform('google');
+
+    if (!supabase) {
+      alert('Supabase client не инициализирован. Проверьте переменные VITE_SUPABASE_URL и VITE_SUPABASE_ANON_KEY в Netlify / .env.');
+      setConnectingPlatform(null);
+      return;
     }
 
-    hapticFeedback.medium();
-    setConnectingPlatform(platform);
-
     try {
-      const res = await fetch(`/api/oauth/${platform}/url`, {
-        headers: { 'x-telegram-user-id': String(user.id) },
+      const { data, error } = await supabase.auth.signInWithOAuth({
+        provider: 'google',
+        options: {
+          redirectTo: window.location.origin,
+          scopes: 'https://www.googleapis.com/auth/youtube.upload https://www.googleapis.com/auth/youtube.readonly https://www.googleapis.com/auth/userinfo.profile https://www.googleapis.com/auth/userinfo.email',
+          queryParams: {
+            access_type: 'offline',
+            prompt: 'consent',
+          },
+          skipBrowserRedirect: true,
+        }
       });
-      const data = await res.json();
 
-      if (!data.url) {
-        throw new Error('Не удалось сгенерировать URL авторизации');
+      if (error) {
+        throw error;
       }
 
-      // Open OAuth provider in direct popup window
-      const popup = window.open(
-        data.url,
-        'oauth_popup',
-        'width=600,height=700,scrollbars=yes,status=yes'
-      );
-
-      if (!popup) {
-        alert('Пожалуйста, разрешите всплывающие окна для подключения аккаунта.');
-        setConnectingPlatform(null);
+      if (data?.url) {
+        const isIframe = window !== window.parent;
+        if (isIframe) {
+          const popup = window.open(data.url, '_blank', 'width=600,height=750,scrollbars=yes,status=yes');
+          if (!popup) {
+            window.location.href = data.url;
+          }
+        } else {
+          window.location.href = data.url;
+        }
       }
     } catch (err: any) {
-      alert(err.message || 'Ошибка запуска OAuth');
-      setConnectingPlatform(null);
+      console.error('Ошибка входа Google/YouTube:', err);
+      alert(`Ошибка входа через Google: ${err.message || err}`);
       hapticFeedback.error();
+    } finally {
+      setConnectingPlatform(null);
+    }
+  };
+
+  // Connect via OAuth
+  const handleConnect = async (platform: 'google' | 'tiktok') => {
+    if (platform === 'google') {
+      return handleGoogleAuth();
+    }
+    if (platform === 'tiktok') {
+      return handleTikTokAuth();
     }
   };
 
@@ -150,7 +191,7 @@ export const IntegrationsTab: React.FC<IntegrationsTabProps> = ({
     }
     hapticFeedback.light();
     try {
-      if (platform === 'tiktok' && supabase) {
+      if (supabase) {
         await supabase.auth.signOut().catch(() => {});
         setSupabaseUser(null);
       }
@@ -170,7 +211,18 @@ export const IntegrationsTab: React.FC<IntegrationsTabProps> = ({
     setTimeout(() => setCopiedField(null), 2000);
   };
 
-  const isYtConnected = integrations?.youtube?.connected;
+  const isYtConnected =
+    integrations?.youtube?.connected ||
+    supabaseUser?.app_metadata?.provider === 'google' ||
+    supabaseUser?.identities?.some((i: any) => i.provider === 'google');
+
+  const ytDisplayName =
+    integrations?.youtube?.channel_title ||
+    supabaseUser?.user_metadata?.full_name ||
+    supabaseUser?.user_metadata?.name ||
+    supabaseUser?.email ||
+    'YouTube Shorts Channel';
+
   const isTtConnected =
     integrations?.tiktok?.connected ||
     supabaseUser?.app_metadata?.provider === 'tiktok' ||
@@ -241,7 +293,7 @@ export const IntegrationsTab: React.FC<IntegrationsTabProps> = ({
                 <div className="flex justify-between items-center text-[#708499]">
                   <span>Канал:</span>
                   <span className="font-semibold text-white">
-                    {integrations?.youtube?.channel_title || 'YouTube Shorts Channel'}
+                    {ytDisplayName}
                   </span>
                 </div>
                 <div className="flex justify-between items-center text-[#708499]">
