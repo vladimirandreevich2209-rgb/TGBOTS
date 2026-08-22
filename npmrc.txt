@@ -1,0 +1,2 @@
+# Tell Cloudflare Pages to use npm install instead of npm ci
+NPM_FLAGS="--no-package-lock"
