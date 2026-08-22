@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Database, Copy, Check, X, Shield, Terminal } from 'lucide-react';
+import { Database, Copy, Check, X, Terminal } from 'lucide-react';
 import { hapticFeedback } from '../lib/telegram';
 
 interface SqlSchemaModalProps {
@@ -12,56 +12,47 @@ export const SqlSchemaModal: React.FC<SqlSchemaModalProps> = ({ isOpen, onClose 
 
   if (!isOpen) return null;
 
-  const sqlCode = `-- SUPABASE POSTGRESQL SCHEMA FOR AUTOPOSTING
-CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+  const sqlCode = `-- CLOUDFLARE D1 (SQLITE) SCHEMA FOR SHORTSMASTER
+-- Привязка базы данных: DB
 
--- 1. Users table (stores Telegram ID & OAuth refresh tokens)
-CREATE TABLE IF NOT EXISTS public.users (
-    telegram_id BIGINT PRIMARY KEY,
-    username TEXT,
-    first_name TEXT,
-    auth_tokens JSONB DEFAULT '{}'::jsonb,
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+-- 1. Таблица пользователей и OAuth токенов
+CREATE TABLE IF NOT EXISTS users (
+    telegram_id TEXT PRIMARY KEY,
+    youtube_refresh_token TEXT,
+    tiktok_access_token TEXT,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
--- 2. Presets table (templates for titles, text & hashtags)
-CREATE TABLE IF NOT EXISTS public.presets (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id BIGINT REFERENCES public.users(telegram_id) ON DELETE CASCADE,
+-- 2. Таблица пресетов (шаблоны заголовков и хештегов)
+CREATE TABLE IF NOT EXISTS presets (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
     title TEXT NOT NULL,
     text TEXT,
     hashtags TEXT,
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY(user_id) REFERENCES users(telegram_id) ON DELETE CASCADE
 );
 
--- 3. Posts table (scheduled and published video queue)
-CREATE TABLE IF NOT EXISTS public.posts (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id BIGINT REFERENCES public.users(telegram_id) ON DELETE CASCADE,
+-- 3. Таблица запланированных и опубликованных постов
+CREATE TABLE IF NOT EXISTS posts (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
     video_url TEXT NOT NULL,
     caption TEXT,
-    platforms JSONB NOT NULL DEFAULT '["youtube", "tiktok"]'::jsonb,
-    scheduled_at TIMESTAMP WITH TIME ZONE NOT NULL,
+    platforms TEXT NOT NULL DEFAULT '["youtube","tiktok"]',
+    scheduled_at DATETIME NOT NULL,
     status TEXT NOT NULL DEFAULT 'scheduled',
     error_message TEXT,
-    published_ids JSONB DEFAULT '{}'::jsonb,
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+    published_ids TEXT DEFAULT '{}',
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY(user_id) REFERENCES users(telegram_id) ON DELETE CASCADE
 );
 
--- Indexes for fast scheduled queries
+-- Индекс для быстрого опроса планировщика (Cron)
 CREATE INDEX IF NOT EXISTS idx_posts_status_scheduled_at 
-ON public.posts (status, scheduled_at) WHERE status = 'scheduled';
-
--- Enable Row Level Security (RLS)
-ALTER TABLE public.users ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.presets ENABLE ROW LEVEL SECURITY;
-ALTER TABLE public.posts ENABLE ROW LEVEL SECURITY;
-
-CREATE POLICY "Service role full access to users" ON public.users FOR ALL USING (true);
-CREATE POLICY "Service role full access to presets" ON public.presets FOR ALL USING (true);
-CREATE POLICY "Service role full access to posts" ON public.posts FOR ALL USING (true);`;
+ON posts (status, scheduled_at);`;
 
   const handleCopy = () => {
     hapticFeedback.light();
@@ -76,11 +67,11 @@ CREATE POLICY "Service role full access to posts" ON public.posts FOR ALL USING 
         {/* Modal Header */}
         <div className="p-4 sm:p-5 border-b border-[#2B3A4A] flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <div className="w-9 h-9 rounded-xl bg-[#242F3D] border border-[#2B3A4A] text-[#3390EC] flex items-center justify-center">
+            <div className="w-9 h-9 rounded-xl bg-[#242F3D] border border-[#2B3A4A] text-orange-400 flex items-center justify-center">
               <Database className="w-5 h-5" />
             </div>
             <div>
-              <h3 className="text-sm font-bold text-white">Supabase SQL Schema</h3>
+              <h3 className="text-sm font-bold text-white">Cloudflare D1 Schema (SQL)</h3>
               <p className="text-[11px] text-[#708499]">Схема таблиц users, presets, posts</p>
             </div>
           </div>
@@ -88,7 +79,7 @@ CREATE POLICY "Service role full access to posts" ON public.posts FOR ALL USING 
           <div className="flex items-center gap-2">
             <button
               onClick={handleCopy}
-              className="px-3 py-1.5 rounded-xl bg-[#3390EC] hover:bg-[#2884E0] text-white text-xs font-semibold flex items-center gap-1.5 transition cursor-pointer shadow-sm"
+              className="px-3 py-1.5 rounded-xl bg-orange-500 hover:bg-orange-600 text-white text-xs font-semibold flex items-center gap-1.5 transition cursor-pointer shadow-sm"
             >
               {copied ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
               <span>{copied ? 'Скопировано' : 'Копировать'}</span>
@@ -102,14 +93,14 @@ CREATE POLICY "Service role full access to posts" ON public.posts FOR ALL USING 
         {/* Modal Content / SQL Code Box */}
         <div className="p-4 sm:p-5 overflow-y-auto space-y-3.5 font-mono text-xs">
           <div className="p-3.5 bg-[#242F3D] rounded-xl border border-[#2B3A4A] text-xs text-slate-300 space-y-1.5">
-            <p className="font-sans font-semibold text-[#3390EC] flex items-center gap-1.5">
+            <p className="font-sans font-semibold text-orange-400 flex items-center gap-1.5">
               <Terminal className="w-4 h-4" />
-              <span>Инструкция по установке:</span>
+              <span>Создание таблиц через Wrangler CLI:</span>
             </p>
             <ol className="list-decimal list-inside space-y-1 text-[#708499] font-sans text-xs">
-              <li>Откройте панель Supabase → <b className="text-white">SQL Editor</b>.</li>
-              <li>Вставьте и выполните данный скрипт.</li>
-              <li>Создайте Storage Bucket с именем <code className="text-emerald-400 font-bold bg-[#17212B] px-1 py-0.5 rounded">shorts_videos</code> (Public).</li>
+              <li>Откройте терминал в папке проекта.</li>
+              <li>Выполните команду: <code className="text-white font-mono bg-[#0E1621] px-1.5 py-0.5 rounded">npx wrangler d1 execute DB --file=schema.sql</code></li>
+              <li>Привяжите базу <b className="text-white">DB</b> в настройках Cloudflare Pages → <b>Settings → Functions → D1 Database Bindings</b>.</li>
             </ol>
           </div>
 

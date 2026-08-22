@@ -1,6 +1,5 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
-  Link2,
   Youtube,
   CheckCircle2,
   AlertCircle,
@@ -8,16 +7,13 @@ import {
   Shield,
   Unlink,
   Database,
-  Terminal,
-  HelpCircle,
   Copy,
   Check,
-  Send,
+  RefreshCw,
 } from 'lucide-react';
 import { IntegrationStatus, TelegramUser } from '../types';
+import { getTelegramId, hapticFeedback } from '../lib/telegram';
 import { api } from '../lib/api';
-import { supabase } from '../lib/supabase';
-import { hapticFeedback } from '../lib/telegram';
 
 interface IntegrationsTabProps {
   user: TelegramUser;
@@ -34,153 +30,135 @@ export const IntegrationsTab: React.FC<IntegrationsTabProps> = ({
 }) => {
   const [connectingPlatform, setConnectingPlatform] = useState<string | null>(null);
   const [copiedField, setCopiedField] = useState<string | null>(null);
-  const [supabaseUser, setSupabaseUser] = useState<any>(null);
+  const [d1Status, setD1Status] = useState<{ hasYouTube: boolean; hasTikTok: boolean }>({
+    hasYouTube: false,
+    hasTikTok: false,
+  });
+  const [isStatusLoading, setIsStatusLoading] = useState(false);
 
-  // Listen for Supabase auth state changes & load initial session
+  // Fetch status directly from Cloudflare Pages Function / D1
+  const fetchUserStatus = useCallback(async () => {
+    const telegramId = getTelegramId();
+    setIsStatusLoading(true);
+    try {
+      const res = await fetch(`/api/user/status?telegram_id=${encodeURIComponent(telegramId)}`);
+      if (res.ok) {
+        const data = await res.json();
+        setD1Status({
+          hasYouTube: Boolean(data.hasYouTube),
+          hasTikTok: Boolean(data.hasTikTok),
+        });
+      }
+    } catch (err) {
+      console.warn('Failed to fetch user status from /api/user/status:', err);
+    } finally {
+      setIsStatusLoading(false);
+    }
+  }, []);
+
   useEffect(() => {
-    if (!supabase) return;
+    fetchUserStatus();
+  }, [fetchUserStatus]);
 
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      if (session?.user) {
-        setSupabaseUser(session.user);
-      }
-    });
-
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
-      if (session?.user) {
-        setSupabaseUser(session.user);
-        hapticFeedback.success();
-        onRefresh();
-      } else {
-        setSupabaseUser(null);
-      }
-    });
-
-    return () => {
-      subscription.unsubscribe();
-    };
-  }, [onRefresh]);
-
-  // Listen for OAuth success message from popup (for Google/YouTube)
+  // Listen for OAuth success popup messages
   useEffect(() => {
     const handleMessage = (event: MessageEvent) => {
-      const origin = event.origin;
-      if (!origin.endsWith('.run.app') && !origin.includes('localhost') && !origin.includes('127.0.0.1')) {
-        return;
-      }
       if (event.data?.type === 'OAUTH_AUTH_SUCCESS') {
         hapticFeedback.success();
         setConnectingPlatform(null);
+        fetchUserStatus();
         onRefresh();
       }
     };
     window.addEventListener('message', handleMessage);
     return () => window.removeEventListener('message', handleMessage);
-  }, [onRefresh]);
+  }, [fetchUserStatus, onRefresh]);
 
-  // Direct TikTok OAuth via Supabase
+  // 1. YouTube Shorts Connect via Google OAuth 2.0
+  const handleYouTubeAuth = () => {
+    hapticFeedback.medium();
+    setConnectingPlatform('youtube');
+
+    const telegramId = getTelegramId();
+    const clientId =
+      import.meta.env.VITE_GOOGLE_CLIENT_ID ||
+      '1052670743516-uom2vckq7a9v4j4smb2j8gq9m3j2h9m8.apps.googleusercontent.com';
+    
+    // Use deployed Cloudflare Pages URL or current origin for callback
+    const redirectUri =
+      typeof window !== 'undefined' && window.location.hostname.includes('pages.dev')
+        ? 'https://shortsmaster.pages.dev/api/youtube/callback'
+        : `${window.location.origin}/api/youtube/callback`;
+
+    const scopes = [
+      'https://www.googleapis.com/auth/youtube.upload',
+      'https://www.googleapis.com/auth/youtube.readonly',
+      'https://www.googleapis.com/auth/userinfo.profile',
+    ].join(' ');
+
+    const params = new URLSearchParams({
+      client_id: clientId,
+      redirect_uri: redirectUri,
+      response_type: 'code',
+      scope: scopes,
+      access_type: 'offline',
+      prompt: 'consent',
+      state: telegramId,
+    });
+
+    const googleAuthUrl = `https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`;
+
+    // Open OAuth in popup or direct navigation
+    const isIframe = typeof window !== 'undefined' && window !== window.parent;
+    if (isIframe) {
+      const popup = window.open(
+        googleAuthUrl,
+        'oauth_popup_youtube',
+        'width=600,height=750,scrollbars=yes,status=yes'
+      );
+      if (!popup) {
+        window.location.href = googleAuthUrl;
+      }
+    } else {
+      window.location.href = googleAuthUrl;
+    }
+  };
+
+  // 2. TikTok Connect via /api/tiktok/url
   const handleTikTokAuth = async () => {
     hapticFeedback.medium();
     setConnectingPlatform('tiktok');
 
-    if (!supabase) {
-      alert('Supabase client не инициализирован. Проверьте переменные VITE_SUPABASE_URL и VITE_SUPABASE_ANON_KEY в Netlify / .env.');
-      setConnectingPlatform(null);
-      return;
-    }
-
+    const telegramId = getTelegramId();
     try {
-      // Use skipBrowserRedirect to safely handle popups and prevent iframe blocking (chromewebdata error)
-      const { data, error } = await supabase.auth.signInWithOAuth({
-        provider: 'tiktok' as any,
-        options: {
-          redirectTo: window.location.origin,
-          scopes: 'user.info.basic,user.info.profile,video.upload,video.list',
-          skipBrowserRedirect: true,
-        }
-      });
-
-      if (error) {
-        throw error;
+      const res = await fetch(`/api/tiktok/url?telegram_id=${encodeURIComponent(telegramId)}`);
+      if (!res.ok) {
+        throw new Error('Не удалось сгенерировать ссылку авторизации TikTok');
+      }
+      const data = await res.json();
+      if (!data.url) {
+        throw new Error('Пустой URL авторизации TikTok от сервера');
       }
 
-      if (data?.url) {
-        // Open OAuth in popup or new tab to avoid iframe X-Frame-Options blocking
-        const isIframe = window !== window.parent;
-        if (isIframe) {
-          const popup = window.open(data.url, '_blank', 'width=600,height=750,scrollbars=yes,status=yes');
-          if (!popup) {
-            window.location.href = data.url;
-          }
-        } else {
+      const isIframe = typeof window !== 'undefined' && window !== window.parent;
+      if (isIframe) {
+        const popup = window.open(
+          data.url,
+          'oauth_popup_tiktok',
+          'width=600,height=750,scrollbars=yes,status=yes'
+        );
+        if (!popup) {
           window.location.href = data.url;
         }
+      } else {
+        window.location.href = data.url;
       }
     } catch (err: any) {
       console.error('Ошибка входа TikTok:', err);
-      alert(`Ошибка входа через TikTok: ${err.message || err}`);
+      alert(`Ошибка: ${err.message || 'Не удалось запустить авторизацию TikTok'}`);
       hapticFeedback.error();
     } finally {
       setConnectingPlatform(null);
-    }
-  };
-
-  // Direct Google/YouTube OAuth via Supabase
-  const handleGoogleAuth = async () => {
-    hapticFeedback.medium();
-    setConnectingPlatform('google');
-
-    if (!supabase) {
-      alert('Supabase client не инициализирован. Проверьте переменные VITE_SUPABASE_URL и VITE_SUPABASE_ANON_KEY в Netlify / .env.');
-      setConnectingPlatform(null);
-      return;
-    }
-
-    try {
-      const { data, error } = await supabase.auth.signInWithOAuth({
-        provider: 'google',
-        options: {
-          redirectTo: window.location.origin,
-          scopes: 'https://www.googleapis.com/auth/youtube.upload https://www.googleapis.com/auth/youtube.readonly https://www.googleapis.com/auth/userinfo.profile https://www.googleapis.com/auth/userinfo.email',
-          queryParams: {
-            access_type: 'offline',
-            prompt: 'consent',
-          },
-          skipBrowserRedirect: true,
-        }
-      });
-
-      if (error) {
-        throw error;
-      }
-
-      if (data?.url) {
-        const isIframe = window !== window.parent;
-        if (isIframe) {
-          const popup = window.open(data.url, '_blank', 'width=600,height=750,scrollbars=yes,status=yes');
-          if (!popup) {
-            window.location.href = data.url;
-          }
-        } else {
-          window.location.href = data.url;
-        }
-      }
-    } catch (err: any) {
-      console.error('Ошибка входа Google/YouTube:', err);
-      alert(`Ошибка входа через Google: ${err.message || err}`);
-      hapticFeedback.error();
-    } finally {
-      setConnectingPlatform(null);
-    }
-  };
-
-  // Connect via OAuth
-  const handleConnect = async (platform: 'google' | 'tiktok') => {
-    if (platform === 'google') {
-      return handleGoogleAuth();
-    }
-    if (platform === 'tiktok') {
-      return handleTikTokAuth();
     }
   };
 
@@ -191,11 +169,16 @@ export const IntegrationsTab: React.FC<IntegrationsTabProps> = ({
     }
     hapticFeedback.light();
     try {
-      if (supabase) {
-        await supabase.auth.signOut().catch(() => {});
-        setSupabaseUser(null);
-      }
+      const telegramId = getTelegramId();
+      await fetch(`/api/user/disconnect?telegram_id=${encodeURIComponent(telegramId)}&platform=${platform}`, {
+        method: 'POST',
+      });
       await api.disconnectIntegration(platform).catch(() => {});
+      
+      setD1Status((prev) => ({
+        ...prev,
+        [platform === 'youtube' ? 'hasYouTube' : 'hasTikTok']: false,
+      }));
       hapticFeedback.success();
       onRefresh();
     } catch (err: any) {
@@ -211,41 +194,40 @@ export const IntegrationsTab: React.FC<IntegrationsTabProps> = ({
     setTimeout(() => setCopiedField(null), 2000);
   };
 
-  const isYtConnected =
-    integrations?.youtube?.connected ||
-    supabaseUser?.app_metadata?.provider === 'google' ||
-    supabaseUser?.identities?.some((i: any) => i.provider === 'google');
+  const isYtConnected = d1Status.hasYouTube || Boolean(integrations?.youtube?.connected);
+  const isTtConnected = d1Status.hasTikTok || Boolean(integrations?.tiktok?.connected);
 
-  const ytDisplayName =
-    integrations?.youtube?.channel_title ||
-    supabaseUser?.user_metadata?.full_name ||
-    supabaseUser?.user_metadata?.name ||
-    supabaseUser?.email ||
-    'YouTube Shorts Channel';
-
-  const isTtConnected =
-    integrations?.tiktok?.connected ||
-    supabaseUser?.app_metadata?.provider === 'tiktok' ||
-    supabaseUser?.identities?.some((i: any) => i.provider === 'tiktok');
-  
-  const ttDisplayName =
-    integrations?.tiktok?.display_name ||
-    supabaseUser?.user_metadata?.full_name ||
-    supabaseUser?.user_metadata?.name ||
-    supabaseUser?.email ||
-    '@tiktok_creator';
-
-  const currentOrigin = typeof window !== 'undefined' ? window.location.origin : 'https://your-domain.com';
+  const currentOrigin =
+    typeof window !== 'undefined' && window.location.hostname.includes('pages.dev')
+      ? 'https://shortsmaster.pages.dev'
+      : typeof window !== 'undefined'
+      ? window.location.origin
+      : 'https://shortsmaster.pages.dev';
 
   return (
     <div className="p-4 sm:p-6 pb-28 max-w-4xl mx-auto space-y-5">
-      <div>
-        <h2 className="text-base sm:text-lg font-bold text-white tracking-tight">
-          Интеграции и Аккаунты
-        </h2>
-        <p className="text-xs text-[#708499]">
-          Управление OAuth 2.0 токенами для автоматической публикации в соцсети
-        </p>
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="text-base sm:text-lg font-bold text-white tracking-tight">
+            Интеграции и Аккаунты
+          </h2>
+          <p className="text-xs text-[#708499]">
+            Хранение токенов в Cloudflare D1 (SQLite) • Telegram ID: <span className="font-mono text-cyan-400">{getTelegramId()}</span>
+          </p>
+        </div>
+
+        <button
+          onClick={() => {
+            hapticFeedback.light();
+            fetchUserStatus();
+            onRefresh();
+          }}
+          disabled={isStatusLoading}
+          className="p-2 rounded-xl bg-[#242F3D] hover:bg-[#2B3A4A] border border-[#2B3A4A] text-[#708499] hover:text-white transition cursor-pointer"
+          title="Обновить статус токенов"
+        >
+          <RefreshCw className={`w-4 h-4 ${isStatusLoading ? 'animate-spin text-cyan-400' : ''}`} />
+        </button>
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
@@ -259,10 +241,10 @@ export const IntegrationsTab: React.FC<IntegrationsTabProps> = ({
                 </div>
                 <div>
                   <h3 className="text-sm font-semibold text-white">
-                    YouTube Data API v3
+                    YouTube Shorts
                   </h3>
                   <p className="text-xs text-[#708499]">
-                    Автопостинг в YouTube Shorts
+                    YouTube Data API v3
                   </p>
                 </div>
               </div>
@@ -291,15 +273,9 @@ export const IntegrationsTab: React.FC<IntegrationsTabProps> = ({
             {isYtConnected ? (
               <div className="p-3.5 rounded-xl bg-[#242F3D] border border-[#2B3A4A] space-y-2 text-xs">
                 <div className="flex justify-between items-center text-[#708499]">
-                  <span>Канал:</span>
-                  <span className="font-semibold text-white">
-                    {ytDisplayName}
-                  </span>
-                </div>
-                <div className="flex justify-between items-center text-[#708499]">
-                  <span>ID канала:</span>
-                  <span className="font-mono text-[11px] text-white">
-                    {integrations?.youtube?.channel_id || 'UC_connected_id'}
+                  <span>Статус токена:</span>
+                  <span className="font-semibold text-emerald-400">
+                    Refresh Token активен (D1)
                   </span>
                 </div>
                 <div className="flex justify-between items-center text-[#708499]">
@@ -317,20 +293,20 @@ export const IntegrationsTab: React.FC<IntegrationsTabProps> = ({
               </div>
             ) : (
               <p className="text-xs text-[#708499] leading-relaxed">
-                Требуется разрешение на загрузку видеороликов через Google OAuth 2.0. Токены сохраняются в Supabase.
+                Авторизация через Google OAuth 2.0. Токен refresh_token сохраняется в Cloudflare D1 для автоматической публикации.
               </p>
             )}
           </div>
 
           {!isYtConnected && (
             <button
-              onClick={() => handleConnect('google')}
-              disabled={connectingPlatform === 'google'}
+              onClick={handleYouTubeAuth}
+              disabled={connectingPlatform === 'youtube'}
               className="w-full py-3 px-4 rounded-xl bg-red-600 hover:bg-red-500 text-white text-xs font-semibold flex items-center justify-center gap-2 shadow-md shadow-red-600/20 active:scale-[0.98] transition cursor-pointer"
             >
               <ExternalLink className="w-4 h-4" />
               <span>
-                {connectingPlatform === 'google' ? 'Подключение...' : 'Подключить YouTube Shorts'}
+                {connectingPlatform === 'youtube' ? 'Подключение...' : 'Подключить YouTube Shorts'}
               </span>
             </button>
           )}
@@ -378,15 +354,9 @@ export const IntegrationsTab: React.FC<IntegrationsTabProps> = ({
             {isTtConnected ? (
               <div className="p-3.5 rounded-xl bg-[#242F3D] border border-[#2B3A4A] space-y-2 text-xs">
                 <div className="flex justify-between items-center text-[#708499]">
-                  <span>Аккаунт:</span>
+                  <span>Статус токена:</span>
                   <span className="font-semibold text-cyan-300">
-                    {ttDisplayName}
-                  </span>
-                </div>
-                <div className="flex justify-between items-center text-[#708499]">
-                  <span>Open ID:</span>
-                  <span className="font-mono text-[11px] text-white">
-                    {integrations?.tiktok?.open_id || 'open_id_123'}
+                    Access Token активен (D1)
                   </span>
                 </div>
                 <div className="flex justify-between items-center text-[#708499]">
@@ -404,14 +374,14 @@ export const IntegrationsTab: React.FC<IntegrationsTabProps> = ({
               </div>
             ) : (
               <p className="text-xs text-[#708499] leading-relaxed">
-                Авторизация через TikTok Login Kit для загрузки видео через Content Posting API v2.
+                Авторизация через TikTok Login Kit v2. Токен сохраняется в таблице users базы данных Cloudflare D1.
               </p>
             )}
           </div>
 
           {!isTtConnected && (
             <button
-              onClick={() => handleConnect('tiktok')}
+              onClick={handleTikTokAuth}
               disabled={connectingPlatform === 'tiktok'}
               className="w-full py-3 px-4 rounded-xl bg-[#242F3D] hover:bg-[#2B3A4A] text-cyan-300 border border-cyan-500/30 text-xs font-semibold flex items-center justify-center gap-2 shadow-md active:scale-[0.98] transition cursor-pointer"
             >
@@ -424,30 +394,32 @@ export const IntegrationsTab: React.FC<IntegrationsTabProps> = ({
         </div>
       </div>
 
-      {/* 3. Supabase & Database Storage Info */}
+      {/* 3. Cloudflare D1 Database Info */}
       <div className="p-5 rounded-2xl bg-[#17212B] border border-[#2B3A4A] space-y-4 shadow-sm">
         <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-xl bg-[#242F3D] border border-[#2B3A4A] flex items-center justify-center text-[#3390EC]">
+          <div className="w-10 h-10 rounded-xl bg-[#242F3D] border border-[#2B3A4A] flex items-center justify-center text-orange-400">
             <Database className="w-5 h-5" />
           </div>
           <div>
             <h3 className="text-sm font-semibold text-white">
-              Supabase PostgreSQL & Storage
+              Cloudflare D1 Database (SQLite)
             </h3>
             <p className="text-xs text-[#708499]">
-              Хранилище видеороликов (9:16) и реляционная база данных
+              Привязка: <code className="font-mono text-orange-400">DB</code> • Таблица пользователей: <code className="font-mono text-white">users</code>
             </p>
           </div>
         </div>
 
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
           <div className="p-3 rounded-xl bg-[#242F3D] border border-[#2B3A4A] space-y-1">
-            <span className="text-[#708499]">Storage Bucket:</span>
-            <p className="font-mono text-emerald-400 font-semibold">shorts_videos</p>
+            <span className="text-[#708499]">Поля таблицы users:</span>
+            <p className="font-mono text-emerald-400 font-semibold text-[11px]">
+              telegram_id, youtube_refresh_token, tiktok_access_token, updated_at
+            </p>
           </div>
           <div className="p-3 rounded-xl bg-[#242F3D] border border-[#2B3A4A] space-y-1">
-            <span className="text-[#708499]">Таблицы БД:</span>
-            <p className="font-mono text-white font-semibold">users, presets, posts</p>
+            <span className="text-[#708499]">Хостинг & Edge Functions:</span>
+            <p className="font-mono text-cyan-300 font-semibold">shortsmaster.pages.dev</p>
           </div>
         </div>
 
@@ -456,27 +428,27 @@ export const IntegrationsTab: React.FC<IntegrationsTabProps> = ({
             hapticFeedback.light();
             onOpenSqlModal();
           }}
-          className="w-full py-2.5 px-4 rounded-xl bg-[#242F3D] hover:bg-[#2B3A4A] border border-[#2B3A4A] text-[#3390EC] text-xs font-semibold flex items-center justify-center gap-2 transition cursor-pointer"
+          className="w-full py-2.5 px-4 rounded-xl bg-[#242F3D] hover:bg-[#2B3A4A] border border-[#2B3A4A] text-orange-300 text-xs font-semibold flex items-center justify-center gap-2 transition cursor-pointer"
         >
           <Database className="w-4 h-4" />
-          <span>Открыть SQL-скрипт схемы Supabase</span>
+          <span>Схема таблицы Cloudflare D1 (SQL)</span>
         </button>
       </div>
 
-      {/* 4. OAuth Callback & Webhook Helper for Developer */}
+      {/* 4. OAuth Callback Helper for Developer */}
       <div className="p-5 rounded-2xl bg-[#17212B] border border-[#2B3A4A] space-y-3">
         <div className="flex items-center gap-2 text-xs font-semibold text-white">
           <Shield className="w-4 h-4 text-[#3390EC]" />
-          <span>Настройки Redirect URI для Google Cloud и TikTok Developers</span>
+          <span>Настройки Redirect URI для Cloudflare Pages</span>
         </div>
 
         <div className="space-y-3 text-xs">
           <div className="space-y-1.5">
-            <span className="text-[11px] text-[#708499]">Google Redirect URI:</span>
+            <span className="text-[11px] text-[#708499]">Google Redirect URI (в Google Cloud Console):</span>
             <div className="flex items-center gap-2 bg-[#242F3D] px-3 py-2 rounded-xl border border-[#2B3A4A] font-mono text-[11px] text-white">
-              <span className="truncate flex-1">{currentOrigin}/api/oauth/google/callback</span>
+              <span className="truncate flex-1">https://shortsmaster.pages.dev/api/youtube/callback</span>
               <button
-                onClick={() => copyToClipboard(`${currentOrigin}/api/oauth/google/callback`, 'google_cb')}
+                onClick={() => copyToClipboard('https://shortsmaster.pages.dev/api/youtube/callback', 'google_cb')}
                 className="p-1 text-[#708499] hover:text-white cursor-pointer"
               >
                 {copiedField === 'google_cb' ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
@@ -485,11 +457,11 @@ export const IntegrationsTab: React.FC<IntegrationsTabProps> = ({
           </div>
 
           <div className="space-y-1.5">
-            <span className="text-[11px] text-[#708499]">TikTok Redirect URI:</span>
+            <span className="text-[11px] text-[#708499]">TikTok Redirect URI (в TikTok Developer Portal):</span>
             <div className="flex items-center gap-2 bg-[#242F3D] px-3 py-2 rounded-xl border border-[#2B3A4A] font-mono text-[11px] text-white">
-              <span className="truncate flex-1">{currentOrigin}/api/oauth/tiktok/callback</span>
+              <span className="truncate flex-1">https://shortsmaster.pages.dev/api/tiktok/callback</span>
               <button
-                onClick={() => copyToClipboard(`${currentOrigin}/api/oauth/tiktok/callback`, 'tiktok_cb')}
+                onClick={() => copyToClipboard('https://shortsmaster.pages.dev/api/tiktok/callback', 'tiktok_cb')}
                 className="p-1 text-[#708499] hover:text-white cursor-pointer"
               >
                 {copiedField === 'tiktok_cb' ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}

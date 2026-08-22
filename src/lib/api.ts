@@ -187,19 +187,72 @@ export const api = {
     if (!res.ok) throw new Error('Ошибка удаления пресета');
   },
 
-  // 5. Integrations API
+  // 5. Integrations API (Cloudflare D1 & OAuth status)
+  async getUserStatus(telegramId?: string): Promise<{ hasYouTube: boolean; hasTikTok: boolean }> {
+    const id = telegramId || getTelegramUser().id;
+    try {
+      const res = await fetch(`/api/user/status?telegram_id=${id}`, { headers: getHeaders() });
+      if (res.ok) {
+        return res.json();
+      }
+    } catch (e) {
+      console.warn('Could not fetch user status from /api/user/status:', e);
+    }
+    return { hasYouTube: false, hasTikTok: false };
+  },
+
   async getIntegrations(): Promise<IntegrationStatus> {
-    const res = await fetch('/api/integrations/status', { headers: getHeaders() });
-    if (!res.ok) throw new Error('Ошибка проверки статуса интеграций');
-    return res.json();
+    const user = getTelegramUser();
+    try {
+      // First check D1 status
+      const userStatus = await this.getUserStatus(String(user.id));
+      const res = await fetch('/api/integrations/status', { headers: getHeaders() });
+      if (res.ok) {
+        const data = await res.json();
+        return {
+          youtube: {
+            connected: data.youtube?.connected || userStatus.hasYouTube,
+            channel_title: data.youtube?.channel_title,
+            channel_id: data.youtube?.channel_id,
+          },
+          tiktok: {
+            connected: data.tiktok?.connected || userStatus.hasTikTok,
+            display_name: data.tiktok?.display_name,
+            open_id: data.tiktok?.open_id,
+          },
+          d1: {
+            configured: true,
+            database: 'shortsmaster-db',
+          },
+        };
+      }
+      return {
+        youtube: { connected: userStatus.hasYouTube },
+        tiktok: { connected: userStatus.hasTikTok },
+        d1: { configured: true },
+      };
+    } catch (err) {
+      return {
+        youtube: { connected: false },
+        tiktok: { connected: false },
+        d1: { configured: false },
+      };
+    }
   },
 
   async disconnectIntegration(platform: 'youtube' | 'tiktok'): Promise<void> {
-    const res = await fetch(`/api/integrations/disconnect/${platform}`, {
+    const user = getTelegramUser();
+    // Try Cloudflare D1 disconnect endpoint
+    await fetch(`/api/user/disconnect?telegram_id=${user.id}&platform=${platform}`, {
       method: 'POST',
       headers: getHeaders(),
-    });
-    if (!res.ok) throw new Error(`Не удалось отключить ${platform}`);
+    }).catch(() => {});
+
+    // Also call server-side disconnect if running local server
+    await fetch(`/api/integrations/disconnect/${platform}`, {
+      method: 'POST',
+      headers: getHeaders(),
+    }).catch(() => {});
   },
 
   // 6. Manual Cron trigger

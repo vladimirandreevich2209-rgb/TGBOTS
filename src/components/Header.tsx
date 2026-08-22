@@ -37,17 +37,17 @@ export const Header: React.FC<HeaderProps> = ({ user, integrations, onOpenSqlMod
         </div>
 
         <div className="flex items-center gap-3">
-          {/* Supabase Status Pill */}
+          {/* Cloudflare D1 Status Pill */}
           <button
             onClick={() => {
               hapticFeedback.light();
               onOpenSqlModal();
             }}
-            className="flex items-center gap-2 px-3 py-1.5 bg-[#242F3D] hover:bg-[#2B3A4A] border border-[#2B3A4A] rounded-full text-xs font-medium text-[#3390EC] transition-all cursor-pointer shadow-sm active:scale-95"
-            title="Нажмите для просмотра SQL-схемы Supabase"
+            className="flex items-center gap-2 px-3 py-1.5 bg-[#242F3D] hover:bg-[#2B3A4A] border border-[#2B3A4A] rounded-full text-xs font-medium text-orange-400 transition-all cursor-pointer shadow-sm active:scale-95"
+            title="Нажмите для просмотра SQL-схемы Cloudflare D1"
           >
-            <span className="w-2 h-2 bg-[#3390EC] rounded-full animate-pulse"></span>
-            <span className="hidden sm:inline">Connected to</span> Supabase
+            <span className="w-2 h-2 bg-orange-400 rounded-full animate-pulse"></span>
+            <span className="hidden sm:inline">Connected to</span> Cloudflare D1
           </button>
 
           {/* User Avatar */}

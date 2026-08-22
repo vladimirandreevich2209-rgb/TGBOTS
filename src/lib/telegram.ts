@@ -89,6 +89,14 @@ export const initTelegramApp = () => {
   }
 };
 
+export const getTelegramId = (): string => {
+  const tg = getTelegramWebApp();
+  if (tg?.initDataUnsafe?.user?.id) {
+    return String(tg.initDataUnsafe.user.id);
+  }
+  return 'dev_user';
+};
+
 export const getTelegramUser = (): TelegramUser => {
   const tg = getTelegramWebApp();
   if (tg?.initDataUnsafe?.user) {

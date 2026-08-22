@@ -48,10 +48,9 @@ export interface IntegrationStatus {
     display_name?: string;
     open_id?: string;
   };
-  supabase: {
+  d1?: {
     configured: boolean;
-    url?: string;
-    storage_bucket?: string;
+    database?: string;
   };
 }
 

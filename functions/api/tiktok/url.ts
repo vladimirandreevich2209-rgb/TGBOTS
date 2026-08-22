@@ -1,23 +1,43 @@
-interface Env {
-  TIKTOK_CLIENT_KEY: string;
-  APP_URL: string;
-}
+import { Env, PagesFunction } from '../../types';
 
 export const onRequestGet: PagesFunction<Env> = async (context) => {
-  const clientKey = context.env.TIKTOK_CLIENT_KEY;
-  const appUrl = context.env.APP_URL || 'https://shortsmaster.pages.dev';
-  
-  // Скоупы, необходимые для загрузки и публикации роликов
-  const scope = 'user.info.basic,video.upload,video.publish';
-  const redirectUri = encodeURIComponent(`${appUrl}/auth/callback`);
-  const state = Math.random().toString(36).substring(7);
+  const url = new URL(context.request.url);
+  const telegramId = url.searchParams.get('telegram_id') || 'dev_user';
 
-  const tiktokAuthUrl = `https://www.tiktok.com/v2/auth/authorize/?client_key=${clientKey}&scope=${encodeURIComponent(scope)}&response_type=code&redirect_uri=${redirectUri}&state=${state}`;
+  const corsHeaders = {
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Methods': 'GET, OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type, x-telegram-user-id',
+    'Content-Type': 'application/json',
+  };
 
-  return new Response(JSON.stringify({ url: tiktokAuthUrl }), {
+  const clientKey = context.env.TIKTOK_CLIENT_KEY || 'awq89samplekey';
+  const redirectUri = `https://shortsmaster.pages.dev/api/tiktok/callback`;
+  const scopes = 'user.info.basic,user.info.profile,video.upload,video.list';
+
+  const authParams = new URLSearchParams({
+    client_key: clientKey,
+    scope: scopes,
+    response_type: 'code',
+    redirect_uri: redirectUri,
+    state: telegramId,
+  });
+
+  const authUrl = `https://www.tiktok.com/v2/auth/authorize/?${authParams.toString()}`;
+
+  return new Response(JSON.stringify({ url: authUrl }), {
+    status: 200,
+    headers: corsHeaders,
+  });
+};
+
+export const onRequestOptions: PagesFunction<Env> = async () => {
+  return new Response(null, {
+    status: 204,
     headers: {
-      'Content-Type': 'application/json',
       'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Methods': 'GET, OPTIONS',
+      'Access-Control-Allow-Headers': 'Content-Type, x-telegram-user-id',
     },
   });
 };
