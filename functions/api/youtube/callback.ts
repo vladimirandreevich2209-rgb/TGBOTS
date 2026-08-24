@@ -66,28 +66,121 @@ export const onRequestGet: PagesFunction<Env> = async (context) => {
 
     // Save to Cloudflare D1
     if (context.env.DB) {
-      // Ensure table exists
-      await context.env.DB.exec(`
-        CREATE TABLE IF NOT EXISTS users (
-          telegram_id TEXT PRIMARY KEY,
-          youtube_refresh_token TEXT,
-          tiktok_access_token TEXT,
-          updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-        );
-      `);
+      // Ensure table exists with single-line prepared statement
+      await context.env.DB.prepare(
+        'CREATE TABLE IF NOT EXISTS users (telegram_id TEXT PRIMARY KEY, youtube_refresh_token TEXT, tiktok_access_token TEXT, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP)'
+      ).run();
 
-      await context.env.DB.prepare(`
-        INSERT INTO users (telegram_id, youtube_refresh_token) 
-        VALUES (?, ?) 
-        ON CONFLICT(telegram_id) 
-        DO UPDATE SET youtube_refresh_token = excluded.youtube_refresh_token, updated_at = CURRENT_TIMESTAMP
-      `)
+      await context.env.DB.prepare(
+        'INSERT INTO users (telegram_id, youtube_refresh_token) VALUES (?, ?) ON CONFLICT(telegram_id) DO UPDATE SET youtube_refresh_token = excluded.youtube_refresh_token, updated_at = CURRENT_TIMESTAMP'
+      )
         .bind(telegramId, refreshToken)
         .run();
     }
 
-    // 302 redirect back to the application
-    return Response.redirect('https://shortsmaster.pages.dev', 302);
+    // Success response with auto-redirect and popup handler
+    const successHtml = `
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>YouTube подключен!</title>
+  <style>
+    body {
+      background: #0f172a;
+      color: #f8fafc;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      margin: 0;
+      padding: 16px;
+      box-sizing: border-box;
+    }
+    .card {
+      background: #1e293b;
+      border: 1px solid #334155;
+      border-radius: 16px;
+      padding: 32px 24px;
+      text-align: center;
+      max-width: 400px;
+      width: 100%;
+      box-shadow: 0 10px 25px rgba(0,0,0,0.5);
+    }
+    .icon {
+      width: 64px;
+      height: 64px;
+      background: #ef4444;
+      border-radius: 50%;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      margin-bottom: 20px;
+    }
+    .icon svg {
+      width: 32px;
+      height: 32px;
+      fill: #fff;
+    }
+    h2 {
+      margin: 0 0 8px 0;
+      font-size: 22px;
+      font-weight: 700;
+    }
+    p {
+      color: #94a3b8;
+      font-size: 14px;
+      margin: 0 0 24px 0;
+      line-height: 1.5;
+    }
+    .btn {
+      display: inline-block;
+      width: 100%;
+      background: #3b82f6;
+      color: white;
+      text-decoration: none;
+      padding: 14px 20px;
+      border-radius: 12px;
+      font-weight: 600;
+      font-size: 15px;
+      box-sizing: border-box;
+      transition: background 0.2s;
+    }
+    .btn:hover {
+      background: #2563eb;
+    }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="icon">
+      <svg viewBox="0 0 24 24"><path d="M9 16.2L4.8 12l-1.4 1.4L9 19 21 7l-1.4-1.4L9 16.2z"/></svg>
+    </div>
+    <h2>YouTube успешно подключен!</h2>
+    <p>Канал привязан к боту. Возвращаемся в приложение...</p>
+    <a id="return-link" class="btn" href="${appOrigin}">Вернуться в приложение</a>
+  </div>
+  <script>
+    if (window.opener) {
+      try {
+        window.opener.postMessage({ type: 'oauth_success', platform: 'youtube' }, '*');
+        setTimeout(() => window.close(), 1500);
+      } catch (e) {}
+    }
+    setTimeout(() => {
+      window.location.href = '${appOrigin}';
+    }, 1500);
+  </script>
+</body>
+</html>
+    `;
+
+    return new Response(successHtml, {
+      status: 200,
+      headers: { 'Content-Type': 'text/html; charset=utf-8' },
+    });
   } catch (err: any) {
     console.error('Error in YouTube callback:', err);
     return new Response(

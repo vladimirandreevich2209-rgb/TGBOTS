@@ -60,18 +60,31 @@ export const IntegrationsTab: React.FC<IntegrationsTabProps> = ({
     fetchUserStatus();
   }, [fetchUserStatus]);
 
-  // Listen for OAuth success popup messages
+  // Listen for OAuth success popup messages and window focus
   useEffect(() => {
     const handleMessage = (event: MessageEvent) => {
-      if (event.data?.type === 'OAUTH_AUTH_SUCCESS') {
+      if (
+        event.data?.type === 'OAUTH_AUTH_SUCCESS' ||
+        event.data?.type === 'oauth_success' ||
+        event.data === 'oauth_success'
+      ) {
         hapticFeedback.success();
         setConnectingPlatform(null);
         fetchUserStatus();
         onRefresh();
       }
     };
+
+    const handleFocus = () => {
+      fetchUserStatus();
+    };
+
     window.addEventListener('message', handleMessage);
-    return () => window.removeEventListener('message', handleMessage);
+    window.addEventListener('focus', handleFocus);
+    return () => {
+      window.removeEventListener('message', handleMessage);
+      window.removeEventListener('focus', handleFocus);
+    };
   }, [fetchUserStatus, onRefresh]);
 
   // 1. YouTube Shorts Connect via Google OAuth 2.0
@@ -137,7 +150,8 @@ export const IntegrationsTab: React.FC<IntegrationsTabProps> = ({
     try {
       const res = await fetch(`/api/tiktok/url?telegram_id=${encodeURIComponent(telegramId)}`);
       if (!res.ok) {
-        throw new Error('Не удалось сгенерировать ссылку авторизации TikTok');
+        const errData = await res.json().catch(() => ({}));
+        throw new Error(errData.error || 'Не удалось сгенерировать ссылку авторизации TikTok (проверьте переменные окружения TIKTOK_CLIENT_KEY в Cloudflare)');
       }
       const data = await res.json();
       if (!data.url) {
