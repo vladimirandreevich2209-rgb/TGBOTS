@@ -22,19 +22,22 @@ export const onRequestGet: PagesFunction<Env> = async (context) => {
     );
   }
 
-  const clientId = context.env.GOOGLE_CLIENT_ID;
+  const clientId = context.env.GOOGLE_CLIENT_ID || (context.env as any).VITE_GOOGLE_CLIENT_ID;
   const clientSecret = context.env.GOOGLE_CLIENT_SECRET;
 
   if (!clientId || !clientSecret) {
+    const missing = [];
+    if (!clientId) missing.push('GOOGLE_CLIENT_ID');
+    if (!clientSecret) missing.push('GOOGLE_CLIENT_SECRET');
     return new Response(
-      `<html><body><h3>Ошибка сервера: GOOGLE_CLIENT_ID или GOOGLE_CLIENT_SECRET не настроены в Cloudflare.</h3></body></html>`,
+      `<html><body><h3>Ошибка сервера: ${missing.join(', ')} не настроены в переменных Cloudflare Pages (или требуется перезапустить деплой после их добавления).</h3></body></html>`,
       { status: 500, headers: { 'Content-Type': 'text/html; charset=utf-8' } }
     );
   }
 
   try {
     // Exchange authorization code for tokens
-    const redirectUri = `${url.origin}/api/youtube/callback`;
+    const redirectUri = 'https://shortsmaster.pages.dev/api/youtube/callback';
     const tokenResponse = await fetch('https://oauth2.googleapis.com/token', {
       method: 'POST',
       headers: {
