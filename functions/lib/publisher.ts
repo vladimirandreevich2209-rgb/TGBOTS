@@ -1,5 +1,5 @@
 import { Env } from '../types';
-import { EMBEDDED_SAMPLE_VIDEO_BASE64 } from './sampleVideo';
+import { getSampleVideoBytes } from './sampleVideo';
 
 export interface PublishResult {
   youtube?: {
@@ -15,14 +15,24 @@ export interface PublishResult {
   };
 }
 
-function base64ToArrayBuffer(base64: string): Uint8Array {
-  const binaryString = atob(base64);
-  const len = binaryString.length;
-  const bytes = new Uint8Array(len);
-  for (let i = 0; i < len; i++) {
-    bytes[i] = binaryString.charCodeAt(i);
+function safeBase64ToUint8Array(base64: string): Uint8Array | null {
+  try {
+    if (!base64 || typeof base64 !== 'string') return null;
+    let clean = base64.replace(/[^A-Za-z0-9+/=]/g, '').trim();
+    while (clean.length % 4 !== 0) {
+      clean += '=';
+    }
+    const binaryString = atob(clean);
+    const len = binaryString.length;
+    const bytes = new Uint8Array(len);
+    for (let i = 0; i < len; i++) {
+      bytes[i] = binaryString.charCodeAt(i);
+    }
+    return bytes;
+  } catch (err) {
+    console.warn('safeBase64ToUint8Array decode failed, falling back:', err);
+    return null;
   }
-  return bytes;
 }
 
 /**
@@ -63,8 +73,8 @@ export async function executeRealPublish(
   const title = (lines[0] || 'Shorts Video #shorts').slice(0, 95);
   const description = post.caption || title;
 
-  // 2. Retrieve video binary data (initialized with embedded fallback by default)
-  let videoBytes: Uint8Array = base64ToArrayBuffer(EMBEDDED_SAMPLE_VIDEO_BASE64);
+  // 2. Retrieve video binary data (always valid, initialized with safe byte generator)
+  let videoBytes: Uint8Array = getSampleVideoBytes();
 
   // A. Check if video exists in Cloudflare D1 video_files
   if (env.DB && post.video_url) {
@@ -79,9 +89,9 @@ export async function executeRealPublish(
         .bind(cleanFileName, rawFileName, rawFileName)
         .first<any>();
 
-      if (fileRow && fileRow.data_base64 && fileRow.data_base64.length > 50) {
-        const decoded = base64ToArrayBuffer(fileRow.data_base64);
-        if (decoded.byteLength > 50) {
+      if (fileRow && fileRow.data_base64 && fileRow.data_base64.length > 20) {
+        const decoded = safeBase64ToUint8Array(fileRow.data_base64);
+        if (decoded && decoded.byteLength > 20) {
           videoBytes = decoded;
         }
       }
