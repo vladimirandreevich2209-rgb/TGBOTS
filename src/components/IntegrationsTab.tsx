@@ -6,13 +6,12 @@ import {
   ExternalLink,
   Shield,
   Unlink,
-  Database,
   Copy,
   Check,
   RefreshCw,
 } from 'lucide-react';
 import { IntegrationStatus, TelegramUser } from '../types';
-import { getTelegramId, hapticFeedback } from '../lib/telegram';
+import { getTelegramId, getTelegramWebApp, hapticFeedback } from '../lib/telegram';
 import { api } from '../lib/api';
 
 interface IntegrationsTabProps {
@@ -125,7 +124,14 @@ export const IntegrationsTab: React.FC<IntegrationsTabProps> = ({
 
     const googleAuthUrl = `https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`;
 
-    // Open OAuth in popup or direct navigation
+    const tg = getTelegramWebApp();
+    if (tg?.openLink) {
+      tg.openLink(googleAuthUrl);
+      setConnectingPlatform(null);
+      return;
+    }
+
+    // Open OAuth in popup or direct navigation for browser
     const isIframe = typeof window !== 'undefined' && window !== window.parent;
     if (isIframe) {
       const popup = window.open(
@@ -156,6 +162,13 @@ export const IntegrationsTab: React.FC<IntegrationsTabProps> = ({
       const data = await res.json();
       if (!data.url) {
         throw new Error('Пустой URL авторизации TikTok от сервера');
+      }
+
+      const tg = getTelegramWebApp();
+      if (tg?.openLink) {
+        tg.openLink(data.url);
+        setConnectingPlatform(null);
+        return;
       }
 
       const isIframe = typeof window !== 'undefined' && window !== window.parent;
@@ -215,13 +228,6 @@ export const IntegrationsTab: React.FC<IntegrationsTabProps> = ({
   const isYtConnected = d1Status.hasYouTube || Boolean(integrations?.youtube?.connected);
   const isTtConnected = d1Status.hasTikTok || Boolean(integrations?.tiktok?.connected);
 
-  const currentOrigin =
-    typeof window !== 'undefined' && window.location.hostname.includes('pages.dev')
-      ? 'https://shortsmaster.pages.dev'
-      : typeof window !== 'undefined'
-      ? window.location.origin
-      : 'https://shortsmaster.pages.dev';
-
   return (
     <div className="p-4 sm:p-6 pb-28 max-w-4xl mx-auto space-y-5">
       <div className="flex items-center justify-between">
@@ -230,7 +236,7 @@ export const IntegrationsTab: React.FC<IntegrationsTabProps> = ({
             Интеграции и Аккаунты
           </h2>
           <p className="text-xs text-[#708499]">
-            Хранение токенов в Cloudflare D1 (SQLite) • Telegram ID: <span className="font-mono text-cyan-400">{getTelegramId()}</span>
+            Привязка к Telegram ID: <span className="font-mono text-cyan-400 font-semibold">{getTelegramId()}</span>
           </p>
         </div>
 
@@ -311,7 +317,7 @@ export const IntegrationsTab: React.FC<IntegrationsTabProps> = ({
               </div>
             ) : (
               <p className="text-xs text-[#708499] leading-relaxed">
-                Авторизация через Google OAuth 2.0. Токен refresh_token сохраняется в Cloudflare D1 для автоматической публикации.
+                Авторизация через Google OAuth 2.0. Токен refresh_token сохраняется в базе данных для автоматической публикации Shorts.
               </p>
             )}
           </div>
@@ -392,7 +398,7 @@ export const IntegrationsTab: React.FC<IntegrationsTabProps> = ({
               </div>
             ) : (
               <p className="text-xs text-[#708499] leading-relaxed">
-                Авторизация через TikTok Login Kit v2. Токен сохраняется в таблице users базы данных Cloudflare D1.
+                Авторизация через TikTok Login Kit v2. Токен сохраняется в базе данных для автоматической публикации видео.
               </p>
             )}
           </div>
@@ -412,48 +418,7 @@ export const IntegrationsTab: React.FC<IntegrationsTabProps> = ({
         </div>
       </div>
 
-      {/* 3. Cloudflare D1 Database Info */}
-      <div className="p-5 rounded-2xl bg-[#17212B] border border-[#2B3A4A] space-y-4 shadow-sm">
-        <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-xl bg-[#242F3D] border border-[#2B3A4A] flex items-center justify-center text-orange-400">
-            <Database className="w-5 h-5" />
-          </div>
-          <div>
-            <h3 className="text-sm font-semibold text-white">
-              Cloudflare D1 Database (SQLite)
-            </h3>
-            <p className="text-xs text-[#708499]">
-              Привязка: <code className="font-mono text-orange-400">DB</code> • Таблица пользователей: <code className="font-mono text-white">users</code>
-            </p>
-          </div>
-        </div>
-
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
-          <div className="p-3 rounded-xl bg-[#242F3D] border border-[#2B3A4A] space-y-1">
-            <span className="text-[#708499]">Поля таблицы users:</span>
-            <p className="font-mono text-emerald-400 font-semibold text-[11px]">
-              telegram_id, youtube_refresh_token, tiktok_access_token, updated_at
-            </p>
-          </div>
-          <div className="p-3 rounded-xl bg-[#242F3D] border border-[#2B3A4A] space-y-1">
-            <span className="text-[#708499]">Хостинг & Edge Functions:</span>
-            <p className="font-mono text-cyan-300 font-semibold">shortsmaster.pages.dev</p>
-          </div>
-        </div>
-
-        <button
-          onClick={() => {
-            hapticFeedback.light();
-            onOpenSqlModal();
-          }}
-          className="w-full py-2.5 px-4 rounded-xl bg-[#242F3D] hover:bg-[#2B3A4A] border border-[#2B3A4A] text-orange-300 text-xs font-semibold flex items-center justify-center gap-2 transition cursor-pointer"
-        >
-          <Database className="w-4 h-4" />
-          <span>Схема таблицы Cloudflare D1 (SQL)</span>
-        </button>
-      </div>
-
-      {/* 4. OAuth Callback Helper for Developer */}
+      {/* 3. OAuth Callback Helper for Developer */}
       <div className="p-5 rounded-2xl bg-[#17212B] border border-[#2B3A4A] space-y-3">
         <div className="flex items-center gap-2 text-xs font-semibold text-white">
           <Shield className="w-4 h-4 text-[#3390EC]" />
