@@ -420,9 +420,20 @@ export const IntegrationsTab: React.FC<IntegrationsTabProps> = ({
 
       {/* 3. OAuth Callback Helper for Developer */}
       <div className="p-5 rounded-2xl bg-[#17212B] border border-[#2B3A4A] space-y-3">
-        <div className="flex items-center gap-2 text-xs font-semibold text-white">
-          <Shield className="w-4 h-4 text-[#3390EC]" />
-          <span>Настройки Redirect URI для Cloudflare Pages</span>
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2 text-xs font-semibold text-white">
+            <Shield className="w-4 h-4 text-[#3390EC]" />
+            <span>Cloudflare D1 & Настройки Redirect URI</span>
+          </div>
+          <a
+            href="/api/debug"
+            target="_blank"
+            rel="noreferrer"
+            className="text-[11px] text-[#3390EC] hover:underline flex items-center gap-1 font-medium"
+          >
+            <span>Проверить базу D1 (/api/debug)</span>
+            <ExternalLink className="w-3 h-3" />
+          </a>
         </div>
 
         <div className="space-y-3 text-xs">
