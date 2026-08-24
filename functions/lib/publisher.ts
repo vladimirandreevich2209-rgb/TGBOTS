@@ -1,4 +1,5 @@
 import { Env } from '../types';
+import { EMBEDDED_SAMPLE_VIDEO_BASE64 } from './sampleVideo';
 
 export interface PublishResult {
   youtube?: {
@@ -135,10 +136,9 @@ export async function executeRealPublish(
   // D. Guaranteed embedded valid MP4 byte array fallback
   if (!videoBytes || videoBytes.byteLength === 0) {
     try {
-      const { EMBEDDED_SAMPLE_VIDEO_BASE64 } = await import('./sampleVideo');
       videoBytes = base64ToArrayBuffer(EMBEDDED_SAMPLE_VIDEO_BASE64);
     } catch (e) {
-      console.warn('Embedded sample error:', e);
+      console.warn('Embedded sample decode error:', e);
     }
   }
 

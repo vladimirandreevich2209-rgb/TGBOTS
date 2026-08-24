@@ -59,18 +59,22 @@ export const onRequest: PagesFunction<Env> = async (context) => {
       }
     }
 
-    if (context.env.DB && videoBytes && videoBytes.byteLength > 0) {
-      const base64Data = arrayBufferToBase64(videoBytes);
+    if (context.env.DB && videoBytes && videoBytes.byteLength > 0 && videoBytes.byteLength < 1500000) {
+      try {
+        const base64Data = arrayBufferToBase64(videoBytes);
 
-      await context.env.DB.prepare(
-        'CREATE TABLE IF NOT EXISTS video_files (id TEXT PRIMARY KEY, user_id TEXT, file_name TEXT, mime_type TEXT, data_base64 TEXT, size_bytes INTEGER, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)'
-      ).run();
+        await context.env.DB.prepare(
+          'CREATE TABLE IF NOT EXISTS video_files (id TEXT PRIMARY KEY, user_id TEXT, file_name TEXT, mime_type TEXT, data_base64 TEXT, size_bytes INTEGER, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)'
+        ).run();
 
-      await context.env.DB.prepare(
-        'INSERT OR REPLACE INTO video_files (id, user_id, file_name, mime_type, data_base64, size_bytes) VALUES (?, ?, ?, ?, ?, ?)'
-      )
-        .bind(cleanId, userId, filePath, mimeType, base64Data, videoBytes.byteLength)
-        .run();
+        await context.env.DB.prepare(
+          'INSERT OR REPLACE INTO video_files (id, user_id, file_name, mime_type, data_base64, size_bytes) VALUES (?, ?, ?, ?, ?, ?)'
+        )
+          .bind(cleanId, userId, filePath, mimeType, base64Data, videoBytes.byteLength)
+          .run();
+      } catch (dbErr) {
+        console.warn('Could not store full binary into D1 (skipped):', dbErr);
+      }
     }
 
     return new Response(
