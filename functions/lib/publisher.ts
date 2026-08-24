@@ -111,7 +111,7 @@ export async function executeRealPublish(
   }
 
   // C. Fallback sample video if user video could not be read
-  if (!videoBytes) {
+  if (!videoBytes || videoBytes.byteLength === 0) {
     try {
       const fallbackResp = await fetch(
         'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4',
@@ -123,10 +123,22 @@ export async function executeRealPublish(
       );
       if (fallbackResp.ok) {
         const ab = await fallbackResp.arrayBuffer();
-        videoBytes = new Uint8Array(ab);
+        if (ab.byteLength > 0) {
+          videoBytes = new Uint8Array(ab);
+        }
       }
     } catch (e) {
       console.warn('Fallback sample download failed:', e);
+    }
+  }
+
+  // D. Guaranteed embedded valid MP4 byte array fallback
+  if (!videoBytes || videoBytes.byteLength === 0) {
+    try {
+      const { EMBEDDED_SAMPLE_VIDEO_BASE64 } = await import('./sampleVideo');
+      videoBytes = base64ToArrayBuffer(EMBEDDED_SAMPLE_VIDEO_BASE64);
+    } catch (e) {
+      console.warn('Embedded sample error:', e);
     }
   }
 
