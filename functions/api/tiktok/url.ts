@@ -11,9 +11,22 @@ export const onRequestGet: PagesFunction<Env> = async (context) => {
     'Content-Type': 'application/json',
   };
 
-  const clientKey = context.env.TIKTOK_CLIENT_KEY || 'awq89samplekey';
+  const clientKey = context.env.TIKTOK_CLIENT_KEY;
+  if (!clientKey) {
+    return new Response(
+      JSON.stringify({
+        error: 'TIKTOK_CLIENT_KEY is not configured in Cloudflare Pages environment variables',
+      }),
+      {
+        status: 400,
+        headers: corsHeaders,
+      }
+    );
+  }
   const redirectUri = `https://shortsmaster.pages.dev/api/tiktok/callback`;
-  const scopes = 'user.info.basic,user.info.profile,video.upload,video.list';
+  // Standard TikTok Login Kit + Video Post v2 scopes (comma-separated, without deprecated profile scope)
+  const requestedScope = url.searchParams.get('scope');
+  const scopes = requestedScope || 'user.info.basic,video.upload';
 
   const authParams = new URLSearchParams({
     client_key: clientKey,
