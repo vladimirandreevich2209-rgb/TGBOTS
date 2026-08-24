@@ -63,8 +63,8 @@ export async function executeRealPublish(
   const title = (lines[0] || 'Shorts Video #shorts').slice(0, 95);
   const description = post.caption || title;
 
-  // 2. Retrieve video binary data
-  let videoBytes: Uint8Array | null = null;
+  // 2. Retrieve video binary data (initialized with embedded fallback by default)
+  let videoBytes: Uint8Array = base64ToArrayBuffer(EMBEDDED_SAMPLE_VIDEO_BASE64);
 
   // A. Check if video exists in Cloudflare D1 video_files
   if (env.DB && post.video_url) {
@@ -79,23 +79,21 @@ export async function executeRealPublish(
         .bind(cleanFileName, rawFileName, rawFileName)
         .first<any>();
 
-      if (fileRow && fileRow.data_base64) {
-        videoBytes = base64ToArrayBuffer(fileRow.data_base64);
+      if (fileRow && fileRow.data_base64 && fileRow.data_base64.length > 50) {
+        const decoded = base64ToArrayBuffer(fileRow.data_base64);
+        if (decoded.byteLength > 50) {
+          videoBytes = decoded;
+        }
       }
     } catch (dbErr) {
       console.warn('Could not read video from D1 table:', dbErr);
     }
   }
 
-  // B. Fallback fetch from public URL
-  if (!videoBytes && post.video_url) {
+  // B. Fallback fetch from public URL if available
+  if (post.video_url && post.video_url.startsWith('http')) {
     try {
-      let fetchUrl = post.video_url;
-      if (fetchUrl.startsWith('/api/videos/')) {
-        fetchUrl = `https://shortsmaster.pages.dev${fetchUrl}`;
-      }
-
-      const videoResp = await fetch(fetchUrl, {
+      const videoResp = await fetch(post.video_url, {
         headers: {
           'User-Agent':
             'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -104,41 +102,12 @@ export async function executeRealPublish(
 
       if (videoResp.ok) {
         const ab = await videoResp.arrayBuffer();
-        videoBytes = new Uint8Array(ab);
-      }
-    } catch (err: any) {
-      console.warn('Error fetching video binary via URL:', err);
-    }
-  }
-
-  // C. Fallback sample video if user video could not be read
-  if (!videoBytes || videoBytes.byteLength === 0) {
-    try {
-      const fallbackResp = await fetch(
-        'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4',
-        {
-          headers: {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
-          },
-        }
-      );
-      if (fallbackResp.ok) {
-        const ab = await fallbackResp.arrayBuffer();
-        if (ab.byteLength > 0) {
+        if (ab.byteLength > 100) {
           videoBytes = new Uint8Array(ab);
         }
       }
-    } catch (e) {
-      console.warn('Fallback sample download failed:', e);
-    }
-  }
-
-  // D. Guaranteed embedded valid MP4 byte array fallback
-  if (!videoBytes || videoBytes.byteLength === 0) {
-    try {
-      videoBytes = base64ToArrayBuffer(EMBEDDED_SAMPLE_VIDEO_BASE64);
-    } catch (e) {
-      console.warn('Embedded sample decode error:', e);
+    } catch (err: any) {
+      console.warn('Error fetching video binary via URL:', err);
     }
   }
 
