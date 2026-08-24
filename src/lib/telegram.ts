@@ -75,32 +75,48 @@ declare global {
 }
 
 export const getTelegramWebApp = () => {
-  if (typeof window !== 'undefined' && window.Telegram?.WebApp) {
-    return window.Telegram.WebApp;
+  try {
+    if (typeof window !== 'undefined' && window.Telegram?.WebApp) {
+      return window.Telegram.WebApp;
+    }
+  } catch (e) {
+    console.error('Error accessing Telegram WebApp', e);
   }
   return null;
 };
 
 export const initTelegramApp = () => {
-  const tg = getTelegramWebApp();
-  if (tg) {
-    tg.ready();
-    tg.expand();
+  try {
+    const tg = getTelegramWebApp();
+    if (tg) {
+      if (typeof tg.ready === 'function') tg.ready();
+      if (typeof tg.expand === 'function') tg.expand();
+    }
+  } catch (e) {
+    console.error('Error initializing Telegram App', e);
   }
 };
 
 export const getTelegramId = (): string => {
-  const tg = getTelegramWebApp();
-  if (tg?.initDataUnsafe?.user?.id) {
-    return String(tg.initDataUnsafe.user.id);
+  try {
+    const tg = getTelegramWebApp();
+    if (tg?.initDataUnsafe?.user?.id) {
+      return String(tg.initDataUnsafe.user.id);
+    }
+  } catch (e) {
+    console.error('Error getting Telegram ID', e);
   }
   return 'dev_user';
 };
 
 export const getTelegramUser = (): TelegramUser => {
-  const tg = getTelegramWebApp();
-  if (tg?.initDataUnsafe?.user) {
-    return tg.initDataUnsafe.user;
+  try {
+    const tg = getTelegramWebApp();
+    if (tg?.initDataUnsafe?.user) {
+      return tg.initDataUnsafe.user;
+    }
+  } catch (e) {
+    console.error('Error getting Telegram user', e);
   }
   // Default mock user for browser preview & testing
   return {

@@ -1,5 +1,6 @@
 /*
-  X-Content-Type-Options: nosniff
+  Access-Control-Allow-Origin: *
+  Content-Security-Policy: frame-ancestors 'self' https://*.telegram.org https://web.telegram.org https://t.me https://*.t.me *;
 
 /*.js
   Content-Type: text/javascript; charset=utf-8
