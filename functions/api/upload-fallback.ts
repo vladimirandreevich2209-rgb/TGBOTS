@@ -1,5 +1,16 @@
 import { PagesFunction, Env } from '../types';
 
+function arrayBufferToBase64(buffer: ArrayBuffer): string {
+  let binary = '';
+  const bytes = new Uint8Array(buffer);
+  const len = bytes.byteLength;
+  for (let i = 0; i < len; i += 8192) {
+    const chunk = bytes.subarray(i, Math.min(i + 8192, len));
+    binary += String.fromCharCode.apply(null, Array.from(chunk));
+  }
+  return btoa(binary);
+}
+
 export const onRequest: PagesFunction<Env> = async (context) => {
   const url = new URL(context.request.url);
 
@@ -15,14 +26,59 @@ export const onRequest: PagesFunction<Env> = async (context) => {
   }
 
   try {
+    const headerId = context.request.headers.get('x-telegram-user-id');
+    const userId = headerId && headerId.trim() !== '' ? headerId.trim() : 'dev_user';
+
     const filePath = url.searchParams.get('path') || `video-${Date.now()}.mp4`;
-    const publicUrl = `/api/videos/${encodeURIComponent(filePath)}`;
+    const cleanId = filePath.replace(/[^a-zA-Z0-9._-]/g, '_');
+    const publicUrl = `/api/videos/${encodeURIComponent(cleanId)}`;
+
+    let videoBytes: ArrayBuffer | null = null;
+    let mimeType = 'video/mp4';
+
+    // Handle Multipart FormData or Direct Binary stream
+    const contentType = context.request.headers.get('content-type') || '';
+    if (contentType.includes('multipart/form-data')) {
+      try {
+        const formData = await context.request.formData();
+        const file = formData.get('video') as File | null;
+        if (file) {
+          videoBytes = await file.arrayBuffer();
+          mimeType = file.type || 'video/mp4';
+        }
+      } catch (err) {
+        console.warn('FormData parse error, trying raw body:', err);
+      }
+    }
+
+    if (!videoBytes) {
+      try {
+        videoBytes = await context.request.arrayBuffer();
+      } catch (e) {
+        console.warn('Raw body read error:', e);
+      }
+    }
+
+    if (context.env.DB && videoBytes && videoBytes.byteLength > 0) {
+      const base64Data = arrayBufferToBase64(videoBytes);
+
+      await context.env.DB.prepare(
+        'CREATE TABLE IF NOT EXISTS video_files (id TEXT PRIMARY KEY, user_id TEXT, file_name TEXT, mime_type TEXT, data_base64 TEXT, size_bytes INTEGER, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)'
+      ).run();
+
+      await context.env.DB.prepare(
+        'INSERT OR REPLACE INTO video_files (id, user_id, file_name, mime_type, data_base64, size_bytes) VALUES (?, ?, ?, ?, ?, ?)'
+      )
+        .bind(cleanId, userId, filePath, mimeType, base64Data, videoBytes.byteLength)
+        .run();
+    }
 
     return new Response(
       JSON.stringify({
         success: true,
         publicUrl,
-        path: filePath,
+        path: cleanId,
+        size: videoBytes ? videoBytes.byteLength : 0,
       }),
       {
         status: 200,
@@ -46,3 +102,4 @@ export const onRequest: PagesFunction<Env> = async (context) => {
     );
   }
 };
+

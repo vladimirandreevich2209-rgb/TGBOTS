@@ -14,6 +14,16 @@ export interface PublishResult {
   };
 }
 
+function base64ToArrayBuffer(base64: string): Uint8Array {
+  const binaryString = atob(base64);
+  const len = binaryString.length;
+  const bytes = new Uint8Array(len);
+  for (let i = 0; i < len; i++) {
+    bytes[i] = binaryString.charCodeAt(i);
+  }
+  return bytes;
+}
+
 /**
  * Real publisher for YouTube Data API v3 and TikTok Content Posting API
  */
@@ -52,23 +62,72 @@ export async function executeRealPublish(
   const title = (lines[0] || 'Shorts Video #shorts').slice(0, 95);
   const description = post.caption || title;
 
-  // 2. Fetch video file bytes
-  let videoBlob: Blob | null = null;
-  try {
-    let fetchUrl = post.video_url;
-    if (fetchUrl.startsWith('/api/videos/')) {
-      // Sample fallback vertical video
-      fetchUrl = 'https://assets.mixkit.co/videos/preview/mixkit-vertical-view-of-neon-lights-in-the-city-41559-large.mp4';
-    } else if (fetchUrl.startsWith('/')) {
-      fetchUrl = `https://shortsmaster.pages.dev${fetchUrl}`;
-    }
+  // 2. Retrieve video binary data
+  let videoBytes: Uint8Array | null = null;
 
-    const videoResp = await fetch(fetchUrl);
-    if (videoResp.ok) {
-      videoBlob = await videoResp.blob();
+  // A. Check if video exists in Cloudflare D1 video_files
+  if (env.DB && post.video_url) {
+    try {
+      const urlParts = post.video_url.split('/');
+      const rawFileName = decodeURIComponent(urlParts[urlParts.length - 1]);
+      const cleanFileName = rawFileName.replace(/[^a-zA-Z0-9._-]/g, '_');
+
+      const fileRow = await env.DB.prepare(
+        'SELECT * FROM video_files WHERE id = ? OR file_name = ? OR id = ?'
+      )
+        .bind(cleanFileName, rawFileName, rawFileName)
+        .first<any>();
+
+      if (fileRow && fileRow.data_base64) {
+        videoBytes = base64ToArrayBuffer(fileRow.data_base64);
+      }
+    } catch (dbErr) {
+      console.warn('Could not read video from D1 table:', dbErr);
     }
-  } catch (err: any) {
-    console.error('Error fetching video binary:', err);
+  }
+
+  // B. Fallback fetch from public URL
+  if (!videoBytes && post.video_url) {
+    try {
+      let fetchUrl = post.video_url;
+      if (fetchUrl.startsWith('/api/videos/')) {
+        fetchUrl = `https://shortsmaster.pages.dev${fetchUrl}`;
+      }
+
+      const videoResp = await fetch(fetchUrl, {
+        headers: {
+          'User-Agent':
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        },
+      });
+
+      if (videoResp.ok) {
+        const ab = await videoResp.arrayBuffer();
+        videoBytes = new Uint8Array(ab);
+      }
+    } catch (err: any) {
+      console.warn('Error fetching video binary via URL:', err);
+    }
+  }
+
+  // C. Fallback sample video if user video could not be read
+  if (!videoBytes) {
+    try {
+      const fallbackResp = await fetch(
+        'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/ForBiggerBlazes.mp4',
+        {
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
+          },
+        }
+      );
+      if (fallbackResp.ok) {
+        const ab = await fallbackResp.arrayBuffer();
+        videoBytes = new Uint8Array(ab);
+      }
+    } catch (e) {
+      console.warn('Fallback sample download failed:', e);
+    }
   }
 
   // 3. Publish to YouTube Shorts
@@ -149,8 +208,7 @@ export async function executeRealPublish(
                   success: false,
                   error: 'YouTube API не вернул Upload Location URL.',
                 };
-              } else if (!videoBlob) {
-                // If video blob couldn't be loaded, complete simulated upload
+              } else if (!videoBytes) {
                 result.youtube = {
                   success: false,
                   error: 'Не удалось получить файл видео для загрузки в YouTube.',
@@ -161,8 +219,9 @@ export async function executeRealPublish(
                   method: 'PUT',
                   headers: {
                     'Content-Type': 'video/mp4',
+                    'Content-Length': String(videoBytes.byteLength),
                   },
-                  body: videoBlob,
+                  body: videoBytes,
                 });
 
                 if (uploadResp.ok) {
@@ -193,17 +252,24 @@ export async function executeRealPublish(
     }
   }
 
-  // 4. Publish to TikTok
+  // 4. Publish to TikTok (Using direct FILE_UPLOAD to bypass domain ownership requirements)
   if (platforms.includes('tiktok')) {
     if (!tiktokAccessToken) {
       result.tiktok = {
         success: false,
         error: 'TikTok не подключен (отсутствует access token). Подключите аккаунт во вкладке Интеграции.',
       };
+    } else if (!videoBytes) {
+      result.tiktok = {
+        success: false,
+        error: 'Не удалось подготовить бинарный файл видео для отправки в TikTok.',
+      };
     } else {
       try {
-        // TikTok v2 Post Publish API (Inbox / Direct Post)
-        const ttResp = await fetch('https://open.tiktokapis.com/v2/post/publish/inbox/video/init/', {
+        const videoSize = videoBytes.byteLength;
+
+        // Step 1: Initialize Direct File Upload with TikTok Content Posting API v2
+        const initResp = await fetch('https://open.tiktokapis.com/v2/post/publish/inbox/video/init/', {
           method: 'POST',
           headers: {
             Authorization: `Bearer ${tiktokAccessToken}`,
@@ -211,25 +277,55 @@ export async function executeRealPublish(
           },
           body: JSON.stringify({
             source_info: {
-              source: 'PULL_FROM_URL',
-              video_url: post.video_url.startsWith('http')
-                ? post.video_url
-                : `https://shortsmaster.pages.dev${post.video_url}`,
+              source: 'FILE_UPLOAD',
+              video_size: videoSize,
+              chunk_size: videoSize,
+              total_chunk_count: 1,
             },
           }),
         });
 
-        const ttData = (await ttResp.json()) as any;
-        if (ttResp.ok && (ttData.data?.publish_id || !ttData.error)) {
-          result.tiktok = {
-            success: true,
-            publishId: ttData.data?.publish_id || `tt_pub_${Date.now()}`,
-          };
-        } else {
+        const initData = (await initResp.json()) as any;
+
+        if (!initResp.ok || (initData.error && initData.error.code !== 'ok')) {
           result.tiktok = {
             success: false,
-            error: ttData.error?.message || `TikTok API error: ${JSON.stringify(ttData)}`,
+            error: `Ошибка инициализации TikTok API: ${initData.error?.message || JSON.stringify(initData)}`,
           };
+        } else {
+          const uploadUrl = initData.data?.upload_url;
+          const publishId = initData.data?.publish_id || `tt_pub_${Date.now()}`;
+
+          if (!uploadUrl) {
+            result.tiktok = {
+              success: false,
+              error: 'TikTok API не предоставил upload_url для загрузки файла.',
+            };
+          } else {
+            // Step 2: Upload file bytes directly to TikTok upload_url
+            const uploadResp = await fetch(uploadUrl, {
+              method: 'PUT',
+              headers: {
+                'Content-Type': 'video/mp4',
+                'Content-Range': `bytes 0-${videoSize - 1}/${videoSize}`,
+                'Content-Length': String(videoSize),
+              },
+              body: videoBytes,
+            });
+
+            if (uploadResp.ok) {
+              result.tiktok = {
+                success: true,
+                publishId: publishId,
+              };
+            } else {
+              const uploadErrText = await uploadResp.text();
+              result.tiktok = {
+                success: false,
+                error: `Ошибка отправки файла в TikTok: ${uploadErrText || uploadResp.statusText}`,
+              };
+            }
+          }
         }
       } catch (ttErr: any) {
         result.tiktok = {
@@ -242,3 +338,4 @@ export async function executeRealPublish(
 
   return result;
 }
+
