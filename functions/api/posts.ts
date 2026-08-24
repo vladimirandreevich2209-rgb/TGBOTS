@@ -1,4 +1,5 @@
 import { PagesFunction, Env } from '../types';
+import { executeRealPublish } from '../lib/publisher';
 
 export const onRequestGet: PagesFunction<Env> = async (context) => {
   const headerId = context.request.headers.get('x-telegram-user-id');
@@ -68,12 +69,54 @@ export const onRequestPost: PagesFunction<Env> = async (context) => {
     }
 
     const scheduledDate = publish_now ? new Date().toISOString() : (scheduled_at || new Date().toISOString());
-    const initialStatus = publish_now ? 'published' : 'scheduled';
     const newId = 'p-' + Math.random().toString(36).substring(2, 9);
-    const platformsStr = JSON.stringify(Array.isArray(platforms) ? platforms : ['youtube', 'tiktok']);
-    const publishedIdsStr = publish_now
-      ? JSON.stringify({ youtube_video_id: 'yt_' + Date.now(), tiktok_publish_id: 'tt_' + Date.now() })
-      : JSON.stringify({});
+    const platformsArr = Array.isArray(platforms) ? platforms : ['youtube', 'tiktok'];
+    const platformsStr = JSON.stringify(platformsArr);
+
+    let initialStatus = publish_now ? 'publishing' : 'scheduled';
+    let errorMessage: string | null = null;
+    let publishedIdsObj: Record<string, any> = {};
+
+    if (publish_now) {
+      const pubResult = await executeRealPublish(context.env, userId, {
+        id: newId,
+        video_url,
+        caption: caption || '',
+        platforms: platformsArr,
+      });
+
+      let hasSuccess = false;
+      const errors: string[] = [];
+
+      if (pubResult.youtube) {
+        if (pubResult.youtube.success && pubResult.youtube.videoId) {
+          publishedIdsObj.youtube_video_id = pubResult.youtube.videoId;
+          hasSuccess = true;
+        } else if (pubResult.youtube.error) {
+          errors.push(`YouTube: ${pubResult.youtube.error}`);
+        }
+      }
+
+      if (pubResult.tiktok) {
+        if (pubResult.tiktok.success && pubResult.tiktok.publishId) {
+          publishedIdsObj.tiktok_publish_id = pubResult.tiktok.publishId;
+          hasSuccess = true;
+        } else if (pubResult.tiktok.error) {
+          errors.push(`TikTok: ${pubResult.tiktok.error}`);
+        }
+      }
+
+      if (hasSuccess) {
+        initialStatus = 'published';
+      } else if (errors.length > 0) {
+        initialStatus = 'failed';
+        errorMessage = errors.join('; ');
+      } else {
+        initialStatus = 'published';
+      }
+    }
+
+    const publishedIdsStr = JSON.stringify(publishedIdsObj);
 
     if (context.env.DB) {
       await context.env.DB.prepare(
@@ -81,7 +124,7 @@ export const onRequestPost: PagesFunction<Env> = async (context) => {
       ).run();
 
       await context.env.DB.prepare(
-        'INSERT INTO posts (id, user_id, video_url, caption, platforms, scheduled_at, status, published_ids) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+        'INSERT INTO posts (id, user_id, video_url, caption, platforms, scheduled_at, status, error_message, published_ids) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
       )
         .bind(
           newId,
@@ -91,6 +134,7 @@ export const onRequestPost: PagesFunction<Env> = async (context) => {
           platformsStr,
           scheduledDate,
           initialStatus,
+          errorMessage,
           publishedIdsStr
         )
         .run();
@@ -101,11 +145,11 @@ export const onRequestPost: PagesFunction<Env> = async (context) => {
       user_id: userId,
       video_url,
       caption: caption || '',
-      platforms: Array.isArray(platforms) ? platforms : ['youtube', 'tiktok'],
+      platforms: platformsArr,
       scheduled_at: scheduledDate,
       status: initialStatus,
-      error_message: null,
-      published_ids: publish_now ? { youtube_video_id: 'yt_ok', tiktok_publish_id: 'tt_ok' } : {},
+      error_message: errorMessage,
+      published_ids: publishedIdsObj,
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
     };

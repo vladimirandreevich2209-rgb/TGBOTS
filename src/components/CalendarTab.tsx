@@ -139,7 +139,7 @@ export const CalendarTab: React.FC<CalendarTabProps> = ({
             Очередь и Календарь
           </h2>
           <p className="text-xs text-[#708499]">
-            Синхронизировано с таблицей Supabase <code className="text-[11px] bg-[#242F3D] px-1.5 py-0.5 rounded border border-[#2B3A4A] text-white">posts</code>
+            Хранилище расписания: <code className="text-[11px] bg-[#242F3D] px-1.5 py-0.5 rounded border border-[#2B3A4A] text-white">Cloudflare D1 (posts)</code>
           </p>
         </div>
 
@@ -358,15 +358,29 @@ export const CalendarTab: React.FC<CalendarTabProps> = ({
 
                 {/* Published Links Info */}
                 {isPublished && post.published_ids && (
-                  <div className="pt-1 flex flex-wrap gap-2 text-xs">
+                  <div className="pt-1 flex flex-wrap gap-3 text-xs">
                     {post.published_ids.youtube_video_id && (
-                      <span className="text-red-400 font-mono flex items-center gap-1">
-                        YT ID: {post.published_ids.youtube_video_id}
-                      </span>
+                      <a
+                        href={
+                          post.published_ids.youtube_video_id.startsWith('yt_')
+                            ? '#'
+                            : `https://youtube.com/shorts/${post.published_ids.youtube_video_id}`
+                        }
+                        target="_blank"
+                        rel="noreferrer"
+                        className="text-red-400 hover:text-red-300 font-mono flex items-center gap-1 hover:underline"
+                      >
+                        <Youtube className="w-3.5 h-3.5" />
+                        <span>
+                          {post.published_ids.youtube_video_id.startsWith('yt_')
+                            ? `YT: ${post.published_ids.youtube_video_id}`
+                            : 'Смотреть на YouTube ↗'}
+                        </span>
+                      </a>
                     )}
                     {post.published_ids.tiktok_publish_id && (
                       <span className="text-cyan-300 font-mono flex items-center gap-1">
-                        TT ID: {post.published_ids.tiktok_publish_id}
+                        <span>TT ID: {post.published_ids.tiktok_publish_id}</span>
                       </span>
                     )}
                   </div>
