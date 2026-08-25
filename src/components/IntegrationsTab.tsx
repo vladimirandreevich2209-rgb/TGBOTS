@@ -36,6 +36,7 @@ export const IntegrationsTab: React.FC<IntegrationsTabProps> = ({
   const [isStatusLoading, setIsStatusLoading] = useState(false);
   const [tiktokDiagData, setTiktokDiagData] = useState<any>(null);
   const [isDiagLoading, setIsDiagLoading] = useState(false);
+  const [diagCopied, setDiagCopied] = useState(false);
 
   // Fetch TikTok diagnosis
   const handleTestTikTok = async () => {
@@ -51,6 +52,14 @@ export const IntegrationsTab: React.FC<IntegrationsTabProps> = ({
     } finally {
       setIsDiagLoading(false);
     }
+  };
+
+  const handleCopyDiag = () => {
+    if (!tiktokDiagData) return;
+    navigator.clipboard.writeText(JSON.stringify(tiktokDiagData, null, 2));
+    setDiagCopied(true);
+    hapticFeedback.success();
+    setTimeout(() => setDiagCopied(false), 2000);
   };
 
   // Fetch status directly from Cloudflare Pages Function / D1
@@ -426,12 +435,21 @@ export const IntegrationsTab: React.FC<IntegrationsTabProps> = ({
                 </div>
 
                 {tiktokDiagData && (
-                  <div className="mt-2 p-2.5 bg-black/40 rounded-lg border border-cyan-500/20 font-mono text-[10px] text-gray-300 max-h-48 overflow-y-auto space-y-1">
-                    <div className="flex justify-between text-cyan-400 font-bold">
+                  <div className="mt-2 p-2.5 bg-black/40 rounded-lg border border-cyan-500/20 font-mono text-[10px] text-gray-300 max-h-64 overflow-y-auto space-y-1">
+                    <div className="flex items-center justify-between text-cyan-400 font-bold border-b border-cyan-500/20 pb-1 mb-1">
                       <span>Результат диагностики:</span>
-                      <button onClick={() => setTiktokDiagData(null)} className="text-gray-400 hover:text-white cursor-pointer">✕</button>
+                      <div className="flex items-center gap-2">
+                        <button
+                          onClick={handleCopyDiag}
+                          className="px-2 py-0.5 rounded bg-cyan-500/20 hover:bg-cyan-500/30 text-cyan-300 flex items-center gap-1 cursor-pointer"
+                        >
+                          {diagCopied ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
+                          <span>{diagCopied ? 'Скопировано!' : 'Копировать JSON'}</span>
+                        </button>
+                        <button onClick={() => setTiktokDiagData(null)} className="text-gray-400 hover:text-white cursor-pointer px-1">✕</button>
+                      </div>
                     </div>
-                    <pre className="whitespace-pre-wrap break-all">
+                    <pre className="whitespace-pre-wrap break-all select-all">
                       {JSON.stringify(tiktokDiagData, null, 2)}
                     </pre>
                   </div>
