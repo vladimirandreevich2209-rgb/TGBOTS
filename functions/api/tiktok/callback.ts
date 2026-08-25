@@ -61,17 +61,19 @@ export const onRequestGet: PagesFunction<Env> = async (context) => {
     }
 
     const accessToken = tokenData.data?.access_token || tokenData.access_token;
+    const refreshToken = tokenData.data?.refresh_token || tokenData.refresh_token || null;
+    const openId = tokenData.data?.open_id || tokenData.open_id || null;
 
     // Save to Cloudflare D1
     if (context.env.DB) {
       await context.env.DB.prepare(
-        'CREATE TABLE IF NOT EXISTS users (telegram_id TEXT PRIMARY KEY, youtube_refresh_token TEXT, tiktok_access_token TEXT, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP)'
+        'CREATE TABLE IF NOT EXISTS users (telegram_id TEXT PRIMARY KEY, youtube_refresh_token TEXT, tiktok_access_token TEXT, tiktok_refresh_token TEXT, tiktok_open_id TEXT, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP)'
       ).run();
 
       await context.env.DB.prepare(
-        'INSERT INTO users (telegram_id, tiktok_access_token) VALUES (?, ?) ON CONFLICT(telegram_id) DO UPDATE SET tiktok_access_token = excluded.tiktok_access_token, updated_at = CURRENT_TIMESTAMP'
+        'INSERT INTO users (telegram_id, tiktok_access_token, tiktok_refresh_token, tiktok_open_id) VALUES (?, ?, ?, ?) ON CONFLICT(telegram_id) DO UPDATE SET tiktok_access_token = excluded.tiktok_access_token, tiktok_refresh_token = COALESCE(excluded.tiktok_refresh_token, users.tiktok_refresh_token), tiktok_open_id = COALESCE(excluded.tiktok_open_id, users.tiktok_open_id), updated_at = CURRENT_TIMESTAMP'
       )
-        .bind(telegramId, accessToken)
+        .bind(telegramId, accessToken, refreshToken, openId)
         .run();
     }
 

@@ -53,6 +53,7 @@ export async function executeRealPublish(
   // 1. Get user tokens from Cloudflare D1
   let youtubeRefreshToken: string | null = null;
   let tiktokAccessToken: string | null = null;
+  let tiktokRefreshToken: string | null = null;
 
   if (env.DB) {
     const user = await env.DB.prepare(
@@ -64,6 +65,7 @@ export async function executeRealPublish(
     if (user) {
       youtubeRefreshToken = user.youtube_refresh_token;
       tiktokAccessToken = user.tiktok_access_token;
+      tiktokRefreshToken = user.tiktok_refresh_token || null;
     }
   }
 
@@ -73,30 +75,59 @@ export async function executeRealPublish(
   const title = (lines[0] || 'Shorts Video #shorts').slice(0, 95);
   const description = post.caption || title;
 
-  // 2. Retrieve video binary data (always valid, initialized with safe byte generator)
+  // 2. Retrieve video binary data (reassemble user chunks if present, or fallback)
   let videoBytes: Uint8Array = getSampleVideoBytes();
 
-  // A. Check if video exists in Cloudflare D1 video_files
+  // A. Check if video exists in Cloudflare D1 video_chunks or video_files
   if (env.DB && post.video_url) {
     try {
       const urlParts = post.video_url.split('/');
       const rawFileName = decodeURIComponent(urlParts[urlParts.length - 1]);
       const cleanFileName = rawFileName.replace(/[^a-zA-Z0-9._-]/g, '_');
 
-      const fileRow = await env.DB.prepare(
-        'SELECT * FROM video_files WHERE id = ? OR file_name = ? OR id = ?'
+      // 1. Try reading from video_chunks
+      const chunkRows = await env.DB.prepare(
+        'SELECT data_base64 FROM video_chunks WHERE file_id = ? OR file_id = ? ORDER BY chunk_index ASC'
       )
-        .bind(cleanFileName, rawFileName, rawFileName)
-        .first<any>();
+        .bind(cleanFileName, rawFileName)
+        .all<{ data_base64: string }>();
 
-      if (fileRow && fileRow.data_base64 && fileRow.data_base64.length > 20) {
-        const decoded = safeBase64ToUint8Array(fileRow.data_base64);
-        if (decoded && decoded.byteLength > 20) {
-          videoBytes = decoded;
+      if (chunkRows.results && chunkRows.results.length > 0) {
+        const parts: Uint8Array[] = [];
+        let totalLen = 0;
+        for (const row of chunkRows.results) {
+          const b = safeBase64ToUint8Array(row.data_base64);
+          if (b) {
+            parts.push(b);
+            totalLen += b.byteLength;
+          }
+        }
+        if (totalLen > 100) {
+          const fullBytes = new Uint8Array(totalLen);
+          let offset = 0;
+          for (const part of parts) {
+            fullBytes.set(part, offset);
+            offset += part.byteLength;
+          }
+          videoBytes = fullBytes;
+        }
+      } else {
+        // 2. Fallback check from single-row video_files
+        const fileRow = await env.DB.prepare(
+          'SELECT * FROM video_files WHERE id = ? OR file_name = ? OR id = ?'
+        )
+          .bind(cleanFileName, rawFileName, rawFileName)
+          .first<any>();
+
+        if (fileRow && fileRow.data_base64 && fileRow.data_base64.length > 20) {
+          const decoded = safeBase64ToUint8Array(fileRow.data_base64);
+          if (decoded && decoded.byteLength > 20) {
+            videoBytes = decoded;
+          }
         }
       }
     } catch (dbErr) {
-      console.warn('Could not read video from D1 table:', dbErr);
+      console.warn('Could not read video chunks from D1 table:', dbErr);
     }
   }
 
@@ -259,11 +290,12 @@ export async function executeRealPublish(
       try {
         const videoSize = videoBytes.byteLength;
 
-        // Step 1: Initialize Direct File Upload with TikTok Content Posting API v2
-        const initResp = await fetch('https://open.tiktokapis.com/v2/post/publish/inbox/video/init/', {
+        // Helper to attempt TikTok video init
+        let currentAccessToken = tiktokAccessToken;
+        let initResp = await fetch('https://open.tiktokapis.com/v2/post/publish/inbox/video/init/', {
           method: 'POST',
           headers: {
-            Authorization: `Bearer ${tiktokAccessToken}`,
+            Authorization: `Bearer ${currentAccessToken}`,
             'Content-Type': 'application/json; charset=UTF-8',
           },
           body: JSON.stringify({
@@ -276,12 +308,68 @@ export async function executeRealPublish(
           }),
         });
 
-        const initData = (await initResp.json()) as any;
+        let initData = (await initResp.json()) as any;
+
+        // If access token expired, try refreshing with refresh_token
+        if ((!initResp.ok || initData.error?.code === 'access_token_invalid' || initData.error?.message?.includes('access token')) && tiktokRefreshToken && env.TIKTOK_CLIENT_KEY && env.TIKTOK_CLIENT_SECRET) {
+          try {
+            const refreshResp = await fetch('https://open.tiktokapis.com/v2/oauth/token/', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+              body: new URLSearchParams({
+                client_key: env.TIKTOK_CLIENT_KEY,
+                client_secret: env.TIKTOK_CLIENT_SECRET,
+                grant_type: 'refresh_token',
+                refresh_token: tiktokRefreshToken,
+              }),
+            });
+
+            const refreshData = (await refreshResp.json()) as any;
+            const newAccessToken = refreshData.data?.access_token || refreshData.access_token;
+            const newRefreshToken = refreshData.data?.refresh_token || refreshData.refresh_token;
+
+            if (newAccessToken) {
+              currentAccessToken = newAccessToken;
+              if (env.DB) {
+                await env.DB.prepare(
+                  'UPDATE users SET tiktok_access_token = ?, tiktok_refresh_token = COALESCE(?, tiktok_refresh_token), updated_at = CURRENT_TIMESTAMP WHERE telegram_id = ?'
+                )
+                  .bind(newAccessToken, newRefreshToken || null, userId)
+                  .run();
+              }
+
+              // Retry init with new token
+              initResp = await fetch('https://open.tiktokapis.com/v2/post/publish/inbox/video/init/', {
+                method: 'POST',
+                headers: {
+                  Authorization: `Bearer ${currentAccessToken}`,
+                  'Content-Type': 'application/json; charset=UTF-8',
+                },
+                body: JSON.stringify({
+                  source_info: {
+                    source: 'FILE_UPLOAD',
+                    video_size: videoSize,
+                    chunk_size: videoSize,
+                    total_chunk_count: 1,
+                  },
+                }),
+              });
+              initData = (await initResp.json()) as any;
+            }
+          } catch (refErr) {
+            console.warn('TikTok token refresh failed:', refErr);
+          }
+        }
 
         if (!initResp.ok || (initData.error && initData.error.code !== 'ok')) {
+          const rawMsg = initData.error?.message || JSON.stringify(initData);
+          let userFriendlyMsg = `Ошибка TikTok API: ${rawMsg}`;
+          if (rawMsg.includes('access token') || rawMsg.includes('invalid') || initResp.status === 401) {
+            userFriendlyMsg = 'Токен доступа TikTok истек или недействителен (срок жизни токена 24ч). Перейдите во вкладку «Интеграции» и нажмите «Подключить TikTok».';
+          }
           result.tiktok = {
             success: false,
-            error: `Ошибка инициализации TikTok API: ${initData.error?.message || JSON.stringify(initData)}`,
+            error: userFriendlyMsg,
           };
         } else {
           const uploadUrl = initData.data?.upload_url;

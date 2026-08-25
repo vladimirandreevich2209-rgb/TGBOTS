@@ -24,9 +24,9 @@ export const onRequestGet: PagesFunction<Env> = async (context) => {
     );
   }
   const redirectUri = `https://shortsmaster.pages.dev/api/tiktok/callback`;
-  // Standard TikTok Login Kit + Video Post v2 scopes (comma-separated, without deprecated profile scope)
+  // Standard TikTok Login Kit + Video Post v2 scopes (comma-separated)
   const requestedScope = url.searchParams.get('scope');
-  const scopes = requestedScope || 'user.info.basic,video.upload';
+  const scopes = requestedScope || 'user.info.basic,video.upload,video.publish';
 
   const authParams = new URLSearchParams({
     client_key: clientKey,

@@ -59,21 +59,46 @@ export const onRequest: PagesFunction<Env> = async (context) => {
       }
     }
 
-    if (context.env.DB && videoBytes && videoBytes.byteLength > 0 && videoBytes.byteLength < 1500000) {
+    if (context.env.DB && videoBytes && videoBytes.byteLength > 0) {
       try {
-        const base64Data = arrayBufferToBase64(videoBytes);
+        const totalSize = videoBytes.byteLength;
+        const CHUNK_SIZE = 120000; // ~120KB binary chunks, perfectly safe for D1 parameters
+        const totalChunks = Math.ceil(totalSize / CHUNK_SIZE);
 
         await context.env.DB.prepare(
-          'CREATE TABLE IF NOT EXISTS video_files (id TEXT PRIMARY KEY, user_id TEXT, file_name TEXT, mime_type TEXT, data_base64 TEXT, size_bytes INTEGER, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)'
+          'CREATE TABLE IF NOT EXISTS video_files (id TEXT PRIMARY KEY, user_id TEXT, file_name TEXT, mime_type TEXT, size_bytes INTEGER, total_chunks INTEGER, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)'
         ).run();
 
         await context.env.DB.prepare(
-          'INSERT OR REPLACE INTO video_files (id, user_id, file_name, mime_type, data_base64, size_bytes) VALUES (?, ?, ?, ?, ?, ?)'
+          'CREATE TABLE IF NOT EXISTS video_chunks (file_id TEXT, chunk_index INTEGER, data_base64 TEXT, PRIMARY KEY(file_id, chunk_index))'
+        ).run();
+
+        // Clear existing chunks for this file if any
+        await context.env.DB.prepare('DELETE FROM video_chunks WHERE file_id = ?').bind(cleanId).run();
+
+        // Save chunks
+        const u8 = new Uint8Array(videoBytes);
+        for (let i = 0; i < totalChunks; i++) {
+          const start = i * CHUNK_SIZE;
+          const end = Math.min(start + CHUNK_SIZE, totalSize);
+          const chunkBytes = u8.slice(start, end);
+          const chunkB64 = arrayBufferToBase64(chunkBytes.buffer);
+
+          await context.env.DB.prepare(
+            'INSERT OR REPLACE INTO video_chunks (file_id, chunk_index, data_base64) VALUES (?, ?, ?)'
+          )
+            .bind(cleanId, i, chunkB64)
+            .run();
+        }
+
+        // Save file meta
+        await context.env.DB.prepare(
+          'INSERT OR REPLACE INTO video_files (id, user_id, file_name, mime_type, size_bytes, total_chunks) VALUES (?, ?, ?, ?, ?, ?)'
         )
-          .bind(cleanId, userId, filePath, mimeType, base64Data, videoBytes.byteLength)
+          .bind(cleanId, userId, filePath, mimeType, totalSize, totalChunks)
           .run();
       } catch (dbErr) {
-        console.warn('Could not store full binary into D1 (skipped):', dbErr);
+        console.warn('Could not store chunks into D1:', dbErr);
       }
     }
 
