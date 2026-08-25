@@ -1,4 +1,5 @@
 import { PagesFunction, Env } from '../types';
+import { initDatabase } from '../lib/db';
 
 function arrayBufferToBase64(buffer: ArrayBuffer): string {
   let binary = '';
@@ -61,34 +62,36 @@ export const onRequest: PagesFunction<Env> = async (context) => {
 
     if (context.env.DB && videoBytes && videoBytes.byteLength > 0) {
       try {
+        await initDatabase(context.env.DB);
+
         const totalSize = videoBytes.byteLength;
-        const CHUNK_SIZE = 120000; // ~120KB binary chunks, perfectly safe for D1 parameters
+        const CHUNK_SIZE = 600000; // ~600KB binary chunks, fast execution
         const totalChunks = Math.ceil(totalSize / CHUNK_SIZE);
 
-        await context.env.DB.prepare(
-          'CREATE TABLE IF NOT EXISTS video_files (id TEXT PRIMARY KEY, user_id TEXT, file_name TEXT, mime_type TEXT, size_bytes INTEGER, total_chunks INTEGER, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)'
-        ).run();
-
-        await context.env.DB.prepare(
-          'CREATE TABLE IF NOT EXISTS video_chunks (file_id TEXT, chunk_index INTEGER, data_base64 TEXT, PRIMARY KEY(file_id, chunk_index))'
-        ).run();
-
         // Clear existing chunks for this file if any
-        await context.env.DB.prepare('DELETE FROM video_chunks WHERE file_id = ?').bind(cleanId).run();
+        await context.env.DB.prepare('DELETE FROM video_chunks WHERE file_id = ?').bind(cleanId).run().catch(() => {});
 
-        // Save chunks
+        // Save chunks using batches
         const u8 = new Uint8Array(videoBytes);
+        const batchStatements: any[] = [];
+
         for (let i = 0; i < totalChunks; i++) {
           const start = i * CHUNK_SIZE;
           const end = Math.min(start + CHUNK_SIZE, totalSize);
           const chunkBytes = u8.slice(start, end);
           const chunkB64 = arrayBufferToBase64(chunkBytes.buffer);
 
-          await context.env.DB.prepare(
-            'INSERT OR REPLACE INTO video_chunks (file_id, chunk_index, data_base64) VALUES (?, ?, ?)'
-          )
-            .bind(cleanId, i, chunkB64)
-            .run();
+          batchStatements.push(
+            context.env.DB.prepare(
+              'INSERT OR REPLACE INTO video_chunks (file_id, chunk_index, data_base64) VALUES (?, ?, ?)'
+            ).bind(cleanId, i, chunkB64)
+          );
+        }
+
+        // Execute batch in slices of 10 to respect D1 limits
+        for (let i = 0; i < batchStatements.length; i += 10) {
+          const slice = batchStatements.slice(i, i + 10);
+          await context.env.DB.batch(slice);
         }
 
         // Save file meta
@@ -96,7 +99,8 @@ export const onRequest: PagesFunction<Env> = async (context) => {
           'INSERT OR REPLACE INTO video_files (id, user_id, file_name, mime_type, size_bytes, total_chunks) VALUES (?, ?, ?, ?, ?, ?)'
         )
           .bind(cleanId, userId, filePath, mimeType, totalSize, totalChunks)
-          .run();
+          .run()
+          .catch(() => {});
       } catch (dbErr) {
         console.warn('Could not store chunks into D1:', dbErr);
       }

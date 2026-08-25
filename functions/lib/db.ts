@@ -57,13 +57,24 @@ export async function initDatabase(db: any) {
     await db.prepare(`
       CREATE TABLE IF NOT EXISTS video_files (
         id TEXT PRIMARY KEY,
+        user_id TEXT,
         file_name TEXT,
-        data_base64 TEXT,
+        mime_type TEXT,
         size_bytes INTEGER,
-        content_type TEXT,
+        total_chunks INTEGER,
+        data_base64 TEXT,
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP
       )
     `).run().catch(() => {});
+
+    const fileColumns = [
+      'user_id TEXT',
+      'mime_type TEXT',
+      'total_chunks INTEGER'
+    ];
+    for (const col of fileColumns) {
+      await db.prepare(`ALTER TABLE video_files ADD COLUMN ${col}`).run().catch(() => {});
+    }
   } catch (err) {
     console.warn('initDatabase migration notice:', err);
   }

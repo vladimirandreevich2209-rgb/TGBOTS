@@ -25,86 +25,128 @@ export const api = {
     return res.json();
   },
 
-  // 2. Direct upload to Supabase Storage with progress tracking
+  // 2. Direct or Chunked upload to storage with progress tracking and abort support
   async uploadFileToStorage(
     uploadData: UploadUrlResponse,
     file: File,
-    onProgress?: (progress: number) => void
+    onProgress?: (progress: number) => void,
+    signal?: AbortSignal
   ): Promise<string> {
-    return new Promise((resolve, reject) => {
-      const xhr = new XMLHttpRequest();
-      
-      // We can upload either to Supabase signed URL or backend direct proxy fallback
-      xhr.open('PUT', uploadData.uploadUrl, true);
-      xhr.setRequestHeader('Content-Type', file.type);
+    if (signal?.aborted) {
+      throw new DOMException('Загрузка отменена пользователем', 'AbortError');
+    }
 
-      if (uploadData.token) {
-        xhr.setRequestHeader('Authorization', `Bearer ${uploadData.token}`);
-      }
+    // If a direct signed URL (e.g. Supabase S3 / R2 signed URL) is provided
+    if (uploadData.directUpload && uploadData.uploadUrl.startsWith('http')) {
+      return new Promise((resolve, reject) => {
+        const xhr = new XMLHttpRequest();
+        xhr.open('PUT', uploadData.uploadUrl, true);
+        xhr.setRequestHeader('Content-Type', file.type);
 
-      xhr.upload.onprogress = (e) => {
-        if (e.lengthComputable && onProgress) {
-          const percent = Math.round((e.loaded / e.total) * 100);
-          onProgress(percent);
+        if (uploadData.token) {
+          xhr.setRequestHeader('Authorization', `Bearer ${uploadData.token}`);
         }
-      };
 
-      xhr.onload = () => {
-        if (xhr.status >= 200 && xhr.status < 300) {
-          onProgress?.(100);
-          resolve(uploadData.publicUrl);
-        } else {
-          // If direct PUT failed (e.g. CORS on mock or pre-signed issues), try FormData fallback endpoint
-          console.warn('Direct PUT returned status', xhr.status, 'trying fallback upload');
-          this.uploadFileFallback(file, onProgress)
+        if (signal) {
+          signal.addEventListener('abort', () => {
+            xhr.abort();
+            reject(new DOMException('Загрузка отменена пользователем', 'AbortError'));
+          });
+        }
+
+        xhr.upload.onprogress = (e) => {
+          if (e.lengthComputable && onProgress) {
+            onProgress(Math.round((e.loaded / e.total) * 100));
+          }
+        };
+
+        xhr.onload = () => {
+          if (xhr.status >= 200 && xhr.status < 300) {
+            onProgress?.(100);
+            resolve(uploadData.publicUrl);
+          } else {
+            this.uploadFileInChunks(uploadData.path || file.name, file, onProgress, signal)
+              .then(resolve)
+              .catch(reject);
+          }
+        };
+
+        xhr.onerror = () => {
+          this.uploadFileInChunks(uploadData.path || file.name, file, onProgress, signal)
             .then(resolve)
             .catch(reject);
-        }
-      };
+        };
 
-      xhr.onerror = () => {
-        // Retry with fallback multipart endpoint
-        this.uploadFileFallback(file, onProgress)
-          .then(resolve)
-          .catch(reject);
-      };
+        xhr.send(file);
+      });
+    }
 
-      xhr.send(file);
-    });
+    // Otherwise, upload reliably in small binary chunks (~512KB) to prevent 503/timeout limits
+    return this.uploadFileInChunks(uploadData.path || file.name, file, onProgress, signal);
   },
 
-  async uploadFileFallback(file: File, onProgress?: (progress: number) => void): Promise<string> {
-    const formData = new FormData();
-    formData.append('video', file);
-
+  async uploadFileInChunks(
+    fileId: string,
+    file: File,
+    onProgress?: (progress: number) => void,
+    signal?: AbortSignal
+  ): Promise<string> {
     const user = getTelegramUser();
-    return new Promise((resolve, reject) => {
-      const xhr = new XMLHttpRequest();
-      xhr.open('POST', '/api/upload-fallback', true);
-      xhr.setRequestHeader('x-telegram-user-id', String(user.id));
+    const cleanFileId = fileId.replace(/[^a-zA-Z0-9._-]/g, '_');
+    const CHUNK_SIZE = 512 * 1024; // 512 KB chunks
+    const totalChunks = Math.max(1, Math.ceil(file.size / CHUNK_SIZE));
+    let publicUrl = `/api/videos/${encodeURIComponent(cleanFileId)}`;
 
-      xhr.upload.onprogress = (e) => {
-        if (e.lengthComputable && onProgress) {
-          onProgress(Math.round((e.loaded / e.total) * 100));
-        }
-      };
+    for (let chunkIndex = 0; chunkIndex < totalChunks; chunkIndex++) {
+      if (signal?.aborted) {
+        throw new DOMException('Загрузка отменена пользователем', 'AbortError');
+      }
 
-      xhr.onload = () => {
-        if (xhr.status >= 200 && xhr.status < 300) {
-          try {
-            const data = JSON.parse(xhr.responseText);
-            resolve(data.publicUrl);
-          } catch (e) {
-            reject(new Error('Неверный ответ сервера'));
-          }
-        } else {
-          reject(new Error(`Ошибка загрузки (${xhr.status})`));
-        }
-      };
+      const start = chunkIndex * CHUNK_SIZE;
+      const end = Math.min(start + CHUNK_SIZE, file.size);
+      const chunkBlob = file.slice(start, end);
 
-      xhr.onerror = () => reject(new Error('Сетевая ошибка при загрузке файла'));
-      xhr.send(formData);
-    });
+      const params = new URLSearchParams({
+        fileId: cleanFileId,
+        chunkIndex: String(chunkIndex),
+        totalChunks: String(totalChunks),
+        fileName: file.name,
+        fileSize: String(file.size),
+      });
+
+      const response = await fetch(`/api/upload-chunk?${params.toString()}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': file.type || 'video/mp4',
+          'x-telegram-user-id': String(user.id),
+        },
+        body: chunkBlob,
+        signal,
+      });
+
+      if (!response.ok) {
+        const errJson = await response.json().catch(() => ({ error: `HTTP ${response.status}` }));
+        throw new Error(errJson.error || `Ошибка загрузки блока ${chunkIndex + 1}/${totalChunks} (${response.status})`);
+      }
+
+      const result = await response.json();
+      if (result.publicUrl) {
+        publicUrl = result.publicUrl;
+      }
+
+      if (onProgress) {
+        const percent = Math.round(((chunkIndex + 1) / totalChunks) * 100);
+        onProgress(percent);
+      }
+    }
+
+    return publicUrl;
+  },
+
+  async uploadFileFallback(file: File, onProgress?: (progress: number) => void, signal?: AbortSignal): Promise<string> {
+    const user = getTelegramUser();
+    const cleanId = `${user.id}-${Date.now()}-${file.name.replace(/[^a-zA-Z0-9._-]/g, '_')}`;
+    return this.uploadFileInChunks(cleanId, file, onProgress, signal);
   },
 
   // 3. Posts API

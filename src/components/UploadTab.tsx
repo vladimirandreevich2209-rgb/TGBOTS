@@ -12,6 +12,9 @@ import {
   Trash2,
   Tag,
   Loader2,
+  XCircle,
+  RotateCcw,
+  RefreshCw,
 } from 'lucide-react';
 import { Preset, PlatformType } from '../types';
 import { validateVideoFile, VideoMetadataValidation } from '../lib/videoValidator';
@@ -30,6 +33,7 @@ export const UploadTab: React.FC<UploadTabProps> = ({
   onNavigateToCalendar,
 }) => {
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const abortControllerRef = useRef<AbortController | null>(null);
 
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [validation, setValidation] = useState<VideoMetadataValidation | null>(null);
@@ -67,6 +71,15 @@ export const UploadTab: React.FC<UploadTabProps> = ({
     setIsSuccess(false);
     setIsValidating(true);
 
+    // Auto fill title if empty
+    if (!title) {
+      const cleanName = file.name
+        .replace(/\.[^/.]+$/, '')
+        .replace(/[-_]/g, ' ')
+        .trim();
+      setTitle(cleanName);
+    }
+
     try {
       const result = await validateVideoFile(file);
       setValidation(result);
@@ -90,6 +103,30 @@ export const UploadTab: React.FC<UploadTabProps> = ({
     setValidation(null);
     setUploadError(null);
     if (fileInputRef.current) fileInputRef.current.value = '';
+  };
+
+  // Cancel in-flight upload
+  const handleCancelUpload = () => {
+    hapticFeedback.warning();
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+      abortControllerRef.current = null;
+    }
+    setIsUploading(false);
+    setUploadProgress(0);
+    setUploadError('Загрузка отменена');
+  };
+
+  // Full form reset
+  const handleResetAll = () => {
+    hapticFeedback.medium();
+    handleClearFile();
+    setTitle('');
+    setDescription('');
+    setHashtags('#shorts #tiktok #viral');
+    setPublishNow(true);
+    setUploadProgress(0);
+    setUploadError(null);
   };
 
   // Quick Preset Selection
@@ -136,6 +173,9 @@ export const UploadTab: React.FC<UploadTabProps> = ({
       return;
     }
 
+    const abortController = new AbortController();
+    abortControllerRef.current = abortController;
+
     setIsUploading(true);
     setUploadProgress(5);
     setUploadError(null);
@@ -143,18 +183,27 @@ export const UploadTab: React.FC<UploadTabProps> = ({
     try {
       // 1. Get pre-signed upload URL from Supabase Storage via backend
       const uploadData = await api.getUploadUrl(selectedFile.name, selectedFile.type);
-      setUploadProgress(20);
+      setUploadProgress(15);
 
-      // 2. Direct upload to Supabase Storage
+      if (abortController.signal.aborted) {
+        throw new DOMException('Загрузка отменена пользователем', 'AbortError');
+      }
+
+      // 2. Direct/Chunked upload with abort signal
       const publicVideoUrl = await api.uploadFileToStorage(
         uploadData,
         selectedFile,
         (progress) => {
-          setUploadProgress(20 + Math.round(progress * 0.6));
-        }
+          setUploadProgress(15 + Math.round(progress * 0.7));
+        },
+        abortController.signal
       );
 
-      setUploadProgress(85);
+      setUploadProgress(90);
+
+      if (abortController.signal.aborted) {
+        throw new DOMException('Загрузка отменена пользователем', 'AbortError');
+      }
 
       // 3. Combine caption and hashtags
       const fullCaption = `${title.trim()}\n\n${description.trim()}\n\n${hashtags.trim()}`.trim();
@@ -178,11 +227,16 @@ export const UploadTab: React.FC<UploadTabProps> = ({
       setTitle('');
       setDescription('');
     } catch (err: any) {
-      console.error('Upload flow error:', err);
-      setUploadError(err.message || 'Ошибка загрузки видео');
-      hapticFeedback.error();
+      if (err.name === 'AbortError' || err.message?.includes('отменена')) {
+        setUploadError('Загрузка видео была отменена');
+      } else {
+        console.error('Upload flow error:', err);
+        setUploadError(err.message || 'Ошибка загрузки видео');
+        hapticFeedback.error();
+      }
     } finally {
       setIsUploading(false);
+      abortControllerRef.current = null;
     }
   };
 
@@ -330,6 +384,26 @@ export const UploadTab: React.FC<UploadTabProps> = ({
                         )}
                       </div>
                     ) : null}
+
+                    {/* Change / Remove quick buttons */}
+                    <div className="flex items-center gap-2 pt-2">
+                      <button
+                        type="button"
+                        onClick={() => fileInputRef.current?.click()}
+                        className="px-2 py-1 rounded-lg bg-[#242F3D] hover:bg-[#2B3A4A] text-[11px] text-cyan-300 border border-[#2B3A4A] flex items-center gap-1 transition cursor-pointer"
+                      >
+                        <RefreshCw className="w-3 h-3" />
+                        <span>Сменить видео</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleClearFile}
+                        className="px-2 py-1 rounded-lg bg-rose-500/10 hover:bg-rose-500/20 text-[11px] text-rose-300 border border-rose-500/20 flex items-center gap-1 transition cursor-pointer"
+                      >
+                        <Trash2 className="w-3 h-3" />
+                        <span>Отменить выбор</span>
+                      </button>
+                    </div>
                   </div>
                 </div>
 
@@ -537,55 +611,110 @@ export const UploadTab: React.FC<UploadTabProps> = ({
 
             {/* Upload Progress Bar */}
             {isUploading && (
-              <div className="space-y-2 pt-2">
-                <div className="flex justify-between text-xs text-[#708499]">
-                  <span>Загрузка в Supabase Storage...</span>
-                  <span className="font-mono text-white">{uploadProgress}%</span>
+              <div className="space-y-2.5 pt-2 p-3.5 rounded-xl bg-[#17212B] border border-[#3390EC]/30">
+                <div className="flex justify-between items-center text-xs">
+                  <span className="text-[#3390EC] font-medium flex items-center gap-1.5">
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    <span>Отправка видеоролика...</span>
+                  </span>
+                  <span className="font-mono text-white font-bold">{uploadProgress}%</span>
                 </div>
-                <div className="w-full h-2 rounded-full bg-[#242F3D] overflow-hidden">
+
+                <div className="w-full h-2.5 rounded-full bg-[#242F3D] overflow-hidden">
                   <div
-                    className="h-full bg-[#3390EC] transition-all duration-300 rounded-full"
+                    className="h-full bg-gradient-to-r from-[#3390EC] to-cyan-400 transition-all duration-300 rounded-full"
                     style={{ width: `${uploadProgress}%` }}
                   />
+                </div>
+
+                <div className="flex justify-end pt-1">
+                  <button
+                    type="button"
+                    onClick={handleCancelUpload}
+                    className="px-3 py-1.5 rounded-lg bg-rose-500/15 hover:bg-rose-500/25 text-rose-300 text-xs font-semibold flex items-center gap-1.5 transition cursor-pointer border border-rose-500/30"
+                  >
+                    <XCircle className="w-3.5 h-3.5 text-rose-400" />
+                    <span>Отменить загрузку</span>
+                  </button>
                 </div>
               </div>
             )}
 
             {/* Upload Error Alert */}
             {uploadError && (
-              <div className="p-3.5 rounded-xl bg-rose-500/10 border border-rose-500/25 text-rose-300 text-xs flex items-center gap-2">
-                <AlertTriangle className="w-4 h-4 text-rose-400 flex-shrink-0" />
-                <span>{uploadError}</span>
+              <div className="p-3.5 rounded-xl bg-rose-500/10 border border-rose-500/25 text-rose-300 text-xs flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  <AlertTriangle className="w-4 h-4 text-rose-400 flex-shrink-0" />
+                  <span>{uploadError}</span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setUploadError(null)}
+                  className="text-rose-400 hover:text-white text-xs px-1"
+                >
+                  ✕
+                </button>
               </div>
             )}
 
-            {/* Submit Action Button */}
-            <button
-              type="submit"
-              disabled={isUploading || isValidating || (!!selectedFile && !validation?.isValid)}
-              className={`w-full h-14 rounded-xl font-bold text-base shadow-lg transition-all transform active:scale-[0.98] mt-4 flex items-center justify-center gap-2 cursor-pointer ${
-                isUploading || isValidating || (!!selectedFile && !validation?.isValid)
-                  ? 'bg-[#242F3D] border border-[#2B3A4A] text-[#708499] cursor-not-allowed opacity-60'
-                  : 'bg-[#3390EC] hover:bg-[#2B83D8] text-white shadow-[#3390EC]/20'
-              }`}
-            >
+            {/* Action Buttons: Submit / Cancel */}
+            <div className="space-y-2 pt-2">
               {isUploading ? (
-                <>
-                  <Loader2 className="w-5 h-5 animate-spin" />
-                  <span>Загрузка и сохранение...</span>
-                </>
-              ) : publishNow ? (
-                <>
-                  <Send className="w-5 h-5" />
-                  <span>Publish Video Now</span>
-                </>
+                <div className="flex gap-3">
+                  <button
+                    type="button"
+                    disabled
+                    className="flex-1 h-14 rounded-xl font-bold text-sm bg-[#242F3D] border border-[#2B3A4A] text-white flex items-center justify-center gap-2 cursor-not-allowed opacity-80"
+                  >
+                    <Loader2 className="w-5 h-5 animate-spin text-[#3390EC]" />
+                    <span>Загрузка ({uploadProgress}%)...</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleCancelUpload}
+                    className="px-5 h-14 rounded-xl font-bold text-sm bg-rose-500/20 hover:bg-rose-500/30 text-rose-300 border border-rose-500/40 flex items-center justify-center gap-2 transition cursor-pointer active:scale-95"
+                  >
+                    <XCircle className="w-5 h-5 text-rose-400" />
+                    <span>Отмена</span>
+                  </button>
+                </div>
               ) : (
-                <>
-                  <Calendar className="w-5 h-5" />
-                  <span>Schedule Video</span>
-                </>
+                <div className="space-y-2">
+                  <button
+                    type="submit"
+                    disabled={isValidating || (!!selectedFile && !validation?.isValid)}
+                    className={`w-full h-14 rounded-xl font-bold text-base shadow-lg transition-all transform active:scale-[0.98] flex items-center justify-center gap-2 cursor-pointer ${
+                      isValidating || (!!selectedFile && !validation?.isValid)
+                        ? 'bg-[#242F3D] border border-[#2B3A4A] text-[#708499] cursor-not-allowed opacity-60'
+                        : 'bg-[#3390EC] hover:bg-[#2B83D8] text-white shadow-[#3390EC]/20'
+                    }`}
+                  >
+                    {publishNow ? (
+                      <>
+                        <Send className="w-5 h-5" />
+                        <span>Publish Video Now</span>
+                      </>
+                    ) : (
+                      <>
+                        <Calendar className="w-5 h-5" />
+                        <span>Schedule Video</span>
+                      </>
+                    )}
+                  </button>
+
+                  {selectedFile && (
+                    <button
+                      type="button"
+                      onClick={handleResetAll}
+                      className="w-full py-2.5 rounded-xl bg-transparent hover:bg-[#242F3D]/60 text-[#708499] hover:text-white text-xs font-medium flex items-center justify-center gap-1.5 transition cursor-pointer border border-transparent hover:border-[#2B3A4A]"
+                    >
+                      <RotateCcw className="w-3.5 h-3.5" />
+                      <span>Сбросить выбранное видео и форму</span>
+                    </button>
+                  )}
+                </div>
               )}
-            </button>
+            </div>
           </form>
         </div>
       </div>
