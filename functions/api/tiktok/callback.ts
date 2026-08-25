@@ -1,4 +1,5 @@
 import { Env, PagesFunction } from '../../types';
+import { initDatabase } from '../../lib/db';
 
 export const onRequestGet: PagesFunction<Env> = async (context) => {
   const url = new URL(context.request.url);
@@ -22,8 +23,8 @@ export const onRequestGet: PagesFunction<Env> = async (context) => {
     );
   }
 
-  const clientKey = context.env.TIKTOK_CLIENT_KEY;
-  const clientSecret = context.env.TIKTOK_CLIENT_SECRET;
+  const clientKey = (context.env.TIKTOK_CLIENT_KEY || '').trim();
+  const clientSecret = (context.env.TIKTOK_CLIENT_SECRET || '').trim();
 
   if (!clientKey || !clientSecret) {
     return new Response(
@@ -51,29 +52,35 @@ export const onRequestGet: PagesFunction<Env> = async (context) => {
 
     const tokenData = (await tokenResponse.json()) as any;
 
-    if (!tokenResponse.ok || tokenData.error || !tokenData.data?.access_token && !tokenData.access_token) {
+    if (!tokenResponse.ok || tokenData.error || (!tokenData.data?.access_token && !tokenData.access_token)) {
       console.error('TikTok token exchange error:', tokenData);
-      const errMsg = tokenData.error_description || tokenData.message || tokenData.error || 'Token error';
+      const errMsg = tokenData.error_description || tokenData.message || tokenData.error?.message || tokenData.error || 'Token error';
       return new Response(
         `<html><body><h3>Ошибка обмена токена TikTok: ${errMsg}</h3><p><a href="${appOrigin}">Назад</a></p></body></html>`,
         { status: 400, headers: { 'Content-Type': 'text/html; charset=utf-8' } }
       );
     }
 
-    const accessToken = tokenData.data?.access_token || tokenData.access_token;
-    const refreshToken = tokenData.data?.refresh_token || tokenData.refresh_token || null;
-    const openId = tokenData.data?.open_id || tokenData.open_id || null;
+    const accessToken = (tokenData.data?.access_token || tokenData.access_token || '').trim();
+    const refreshToken = (tokenData.data?.refresh_token || tokenData.refresh_token || '').trim() || null;
+    const openId = (tokenData.data?.open_id || tokenData.open_id || '').trim() || null;
+    const scope = (tokenData.data?.scope || tokenData.scope || '').trim() || null;
 
     // Save to Cloudflare D1
     if (context.env.DB) {
-      await context.env.DB.prepare(
-        'CREATE TABLE IF NOT EXISTS users (telegram_id TEXT PRIMARY KEY, youtube_refresh_token TEXT, tiktok_access_token TEXT, tiktok_refresh_token TEXT, tiktok_open_id TEXT, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP)'
-      ).run();
+      await initDatabase(context.env.DB);
 
       await context.env.DB.prepare(
-        'INSERT INTO users (telegram_id, tiktok_access_token, tiktok_refresh_token, tiktok_open_id) VALUES (?, ?, ?, ?) ON CONFLICT(telegram_id) DO UPDATE SET tiktok_access_token = excluded.tiktok_access_token, tiktok_refresh_token = COALESCE(excluded.tiktok_refresh_token, users.tiktok_refresh_token), tiktok_open_id = COALESCE(excluded.tiktok_open_id, users.tiktok_open_id), updated_at = CURRENT_TIMESTAMP'
+        `INSERT INTO users (telegram_id, tiktok_access_token, tiktok_refresh_token, tiktok_open_id, tiktok_scope)
+         VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT(telegram_id) DO UPDATE SET
+           tiktok_access_token = excluded.tiktok_access_token,
+           tiktok_refresh_token = COALESCE(excluded.tiktok_refresh_token, users.tiktok_refresh_token),
+           tiktok_open_id = COALESCE(excluded.tiktok_open_id, users.tiktok_open_id),
+           tiktok_scope = COALESCE(excluded.tiktok_scope, users.tiktok_scope),
+           updated_at = CURRENT_TIMESTAMP`
       )
-        .bind(telegramId, accessToken, refreshToken, openId)
+        .bind(telegramId, accessToken, refreshToken, openId, scope)
         .run();
     }
 

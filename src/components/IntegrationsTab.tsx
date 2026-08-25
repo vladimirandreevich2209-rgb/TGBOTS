@@ -34,6 +34,24 @@ export const IntegrationsTab: React.FC<IntegrationsTabProps> = ({
     hasTikTok: false,
   });
   const [isStatusLoading, setIsStatusLoading] = useState(false);
+  const [tiktokDiagData, setTiktokDiagData] = useState<any>(null);
+  const [isDiagLoading, setIsDiagLoading] = useState(false);
+
+  // Fetch TikTok diagnosis
+  const handleTestTikTok = async () => {
+    hapticFeedback.light();
+    setIsDiagLoading(true);
+    try {
+      const telegramId = getTelegramId();
+      const res = await fetch(`/api/tiktok/test?telegram_id=${encodeURIComponent(telegramId)}`);
+      const data = await res.json();
+      setTiktokDiagData(data);
+    } catch (err: any) {
+      setTiktokDiagData({ error: err.message });
+    } finally {
+      setIsDiagLoading(false);
+    }
+  };
 
   // Fetch status directly from Cloudflare Pages Function / D1
   const fetchUserStatus = useCallback(async () => {
@@ -388,13 +406,36 @@ export const IntegrationsTab: React.FC<IntegrationsTabProps> = ({
                   <span className="text-[11px] text-cyan-300 font-mono">video.upload, video.publish</span>
                 </div>
 
-                <button
-                  onClick={() => handleDisconnect('tiktok')}
-                  className="w-full mt-2 py-2 rounded-xl bg-rose-500/15 hover:bg-rose-500/25 text-rose-300 font-medium flex items-center justify-center gap-1.5 transition cursor-pointer"
-                >
-                  <Unlink className="w-3.5 h-3.5" />
-                  <span>Отключить TikTok</span>
-                </button>
+                <div className="pt-1 flex gap-2">
+                  <button
+                    onClick={handleTestTikTok}
+                    disabled={isDiagLoading}
+                    className="flex-1 py-2 rounded-xl bg-[#17212B] hover:bg-[#2B3A4A] text-cyan-300 font-medium flex items-center justify-center gap-1.5 transition border border-[#2B3A4A] cursor-pointer"
+                  >
+                    <RefreshCw className={`w-3.5 h-3.5 ${isDiagLoading ? 'animate-spin' : ''}`} />
+                    <span>{isDiagLoading ? 'Проверка...' : 'Проверить токен'}</span>
+                  </button>
+
+                  <button
+                    onClick={() => handleDisconnect('tiktok')}
+                    className="py-2 px-3 rounded-xl bg-rose-500/15 hover:bg-rose-500/25 text-rose-300 font-medium flex items-center justify-center gap-1.5 transition cursor-pointer"
+                  >
+                    <Unlink className="w-3.5 h-3.5" />
+                    <span>Отключить</span>
+                  </button>
+                </div>
+
+                {tiktokDiagData && (
+                  <div className="mt-2 p-2.5 bg-black/40 rounded-lg border border-cyan-500/20 font-mono text-[10px] text-gray-300 max-h-48 overflow-y-auto space-y-1">
+                    <div className="flex justify-between text-cyan-400 font-bold">
+                      <span>Результат диагностики:</span>
+                      <button onClick={() => setTiktokDiagData(null)} className="text-gray-400 hover:text-white cursor-pointer">✕</button>
+                    </div>
+                    <pre className="whitespace-pre-wrap break-all">
+                      {JSON.stringify(tiktokDiagData, null, 2)}
+                    </pre>
+                  </div>
+                )}
               </div>
             ) : (
               <p className="text-xs text-[#708499] leading-relaxed">

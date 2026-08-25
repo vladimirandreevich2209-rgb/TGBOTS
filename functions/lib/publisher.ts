@@ -1,5 +1,6 @@
 import { Env } from '../types';
 import { getSampleVideoBytes } from './sampleVideo';
+import { initDatabase } from './db';
 
 export interface PublishResult {
   youtube?: {
@@ -56,6 +57,7 @@ export async function executeRealPublish(
   let tiktokRefreshToken: string | null = null;
 
   if (env.DB) {
+    await initDatabase(env.DB);
     const user = await env.DB.prepare(
       'SELECT * FROM users WHERE telegram_id = ? OR telegram_id = ?'
     )
@@ -274,7 +276,7 @@ export async function executeRealPublish(
     }
   }
 
-  // 4. Publish to TikTok (Using direct FILE_UPLOAD to bypass domain ownership requirements)
+  // 4. Publish to TikTok (Content Posting API v2 Direct Post & Inbox Upload)
   if (platforms.includes('tiktok')) {
     if (!tiktokAccessToken) {
       result.tiktok = {
@@ -289,29 +291,13 @@ export async function executeRealPublish(
     } else {
       try {
         const videoSize = videoBytes.byteLength;
+        let currentAccessToken = (tiktokAccessToken || '').trim().replace(/^["']|["']$/g, '');
 
-        // Helper to attempt TikTok video init
-        let currentAccessToken = tiktokAccessToken;
-        let initResp = await fetch('https://open.tiktokapis.com/v2/post/publish/inbox/video/init/', {
-          method: 'POST',
-          headers: {
-            Authorization: `Bearer ${currentAccessToken}`,
-            'Content-Type': 'application/json; charset=UTF-8',
-          },
-          body: JSON.stringify({
-            source_info: {
-              source: 'FILE_UPLOAD',
-              video_size: videoSize,
-              chunk_size: videoSize,
-              total_chunk_count: 1,
-            },
-          }),
-        });
-
-        let initData = (await initResp.json()) as any;
-
-        // If access token expired, try refreshing with refresh_token
-        if ((!initResp.ok || initData.error?.code === 'access_token_invalid' || initData.error?.message?.includes('access token')) && tiktokRefreshToken && env.TIKTOK_CLIENT_KEY && env.TIKTOK_CLIENT_SECRET) {
+        // Helper to refresh TikTok access token if needed
+        const refreshTikTokToken = async (): Promise<string | null> => {
+          if (!tiktokRefreshToken || !env.TIKTOK_CLIENT_KEY || !env.TIKTOK_CLIENT_SECRET) {
+            return null;
+          }
           try {
             const refreshResp = await fetch('https://open.tiktokapis.com/v2/oauth/token/', {
               method: 'POST',
@@ -325,8 +311,8 @@ export async function executeRealPublish(
             });
 
             const refreshData = (await refreshResp.json()) as any;
-            const newAccessToken = refreshData.data?.access_token || refreshData.access_token;
-            const newRefreshToken = refreshData.data?.refresh_token || refreshData.refresh_token;
+            const newAccessToken = (refreshData.data?.access_token || refreshData.access_token || '').trim();
+            const newRefreshToken = (refreshData.data?.refresh_token || refreshData.refresh_token || '').trim();
 
             if (newAccessToken) {
               currentAccessToken = newAccessToken;
@@ -337,36 +323,115 @@ export async function executeRealPublish(
                   .bind(newAccessToken, newRefreshToken || null, userId)
                   .run();
               }
-
-              // Retry init with new token
-              initResp = await fetch('https://open.tiktokapis.com/v2/post/publish/inbox/video/init/', {
-                method: 'POST',
-                headers: {
-                  Authorization: `Bearer ${currentAccessToken}`,
-                  'Content-Type': 'application/json; charset=UTF-8',
-                },
-                body: JSON.stringify({
-                  source_info: {
-                    source: 'FILE_UPLOAD',
-                    video_size: videoSize,
-                    chunk_size: videoSize,
-                    total_chunk_count: 1,
-                  },
-                }),
-              });
-              initData = (await initResp.json()) as any;
+              return newAccessToken;
             }
           } catch (refErr) {
-            console.warn('TikTok token refresh failed:', refErr);
+            console.warn('TikTok token refresh error:', refErr);
+          }
+          return null;
+        };
+
+        // Step 1: Query Creator Info to inspect privacy settings & permissions
+        let creatorInfoResp = await fetch('https://open.tiktokapis.com/v2/post/publish/creator_info/query/', {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${currentAccessToken}`,
+            'Content-Type': 'application/json; charset=UTF-8',
+          },
+          body: JSON.stringify({}),
+        });
+
+        let creatorInfoData = (await creatorInfoResp.json().catch(() => ({}))) as any;
+
+        // If creator info returned token invalid, try refreshing
+        if (!creatorInfoResp.ok || creatorInfoData.error?.code === 'access_token_invalid') {
+          const refreshed = await refreshTikTokToken();
+          if (refreshed) {
+            creatorInfoResp = await fetch('https://open.tiktokapis.com/v2/post/publish/creator_info/query/', {
+              method: 'POST',
+              headers: {
+                Authorization: `Bearer ${currentAccessToken}`,
+                'Content-Type': 'application/json; charset=UTF-8',
+              },
+              body: JSON.stringify({}),
+            });
+            creatorInfoData = (await creatorInfoResp.json().catch(() => ({}))) as any;
           }
         }
 
+        const privacyOptions: string[] = creatorInfoData.data?.privacy_level_options || [];
+        const chosenPrivacy = privacyOptions.includes('PUBLIC_TO_EVERYONE')
+          ? 'PUBLIC_TO_EVERYONE'
+          : privacyOptions.includes('MUTUAL_FOLLOW_FRIENDS')
+          ? 'MUTUAL_FOLLOW_FRIENDS'
+          : privacyOptions[0] || 'SELF_ONLY';
+
+        // Step 2: Initialize Video Post
+        // Attempt A: Direct Post init (/v2/post/publish/video/init/)
+        let initResp = await fetch('https://open.tiktokapis.com/v2/post/publish/video/init/', {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${currentAccessToken}`,
+            'Content-Type': 'application/json; charset=UTF-8',
+          },
+          body: JSON.stringify({
+            post_info: {
+              title: title.slice(0, 150),
+              privacy_level: chosenPrivacy,
+              disable_duet: false,
+              disable_comment: false,
+              disable_stitch: false,
+              video_cover_timestamp_ms: 1000,
+            },
+            source_info: {
+              source: 'FILE_UPLOAD',
+              video_size: videoSize,
+              chunk_size: videoSize,
+              total_chunk_count: 1,
+            },
+          }),
+        });
+
+        let initData = (await initResp.json().catch(() => ({}))) as any;
+
+        // Attempt B: If Direct Post fails, fallback to Inbox/Draft mode (/v2/post/publish/inbox/video/init/)
+        if (!initResp.ok || initData.error?.code !== 'ok') {
+          console.warn('Direct post init failed, trying inbox/draft mode:', initData);
+          initResp = await fetch('https://open.tiktokapis.com/v2/post/publish/inbox/video/init/', {
+            method: 'POST',
+            headers: {
+              Authorization: `Bearer ${currentAccessToken}`,
+              'Content-Type': 'application/json; charset=UTF-8',
+            },
+            body: JSON.stringify({
+              source_info: {
+                source: 'FILE_UPLOAD',
+                video_size: videoSize,
+                chunk_size: videoSize,
+                total_chunk_count: 1,
+              },
+            }),
+          });
+          initData = (await initResp.json().catch(() => ({}))) as any;
+        }
+
         if (!initResp.ok || (initData.error && initData.error.code !== 'ok')) {
+          const rawCode = initData.error?.code || '';
           const rawMsg = initData.error?.message || JSON.stringify(initData);
+
           let userFriendlyMsg = `Ошибка TikTok API: ${rawMsg}`;
-          if (rawMsg.includes('access token') || rawMsg.includes('invalid') || initResp.status === 401) {
-            userFriendlyMsg = 'Токен доступа TikTok истек или недействителен (срок жизни токена 24ч). Перейдите во вкладку «Интеграции» и нажмите «Подключить TikTok».';
+          if (
+            rawCode === 'access_token_invalid' ||
+            rawMsg.includes('access token is invalid') ||
+            initResp.status === 401
+          ) {
+            userFriendlyMsg =
+              'Токен TikTok отклонен. Если ваше приложение в TikTok Developer Portal находится в статусе «In development», обязательно добавьте ваш аккаунт TikTok в список «Target Users / Test Accounts» в панели разработчика TikTok, затем переподключите его в приложении.';
+          } else if (rawMsg.includes('scope') || rawCode === 'scope_not_authorized') {
+            userFriendlyMsg =
+              'Недостаточно прав TikTok. В панели TikTok for Developers добавьте разрешения «Content Posting API» (video.publish, video.upload) и переподключите аккаунт.';
           }
+
           result.tiktok = {
             success: false,
             error: userFriendlyMsg,
@@ -381,7 +446,7 @@ export async function executeRealPublish(
               error: 'TikTok API не предоставил upload_url для загрузки файла.',
             };
           } else {
-            // Step 2: Upload file bytes directly to TikTok upload_url
+            // Step 3: Upload video bytes directly to TikTok upload_url
             const uploadResp = await fetch(uploadUrl, {
               method: 'PUT',
               headers: {

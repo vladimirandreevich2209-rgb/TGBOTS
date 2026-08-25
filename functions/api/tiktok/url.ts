@@ -11,7 +11,7 @@ export const onRequestGet: PagesFunction<Env> = async (context) => {
     'Content-Type': 'application/json',
   };
 
-  const clientKey = context.env.TIKTOK_CLIENT_KEY;
+  const clientKey = (context.env.TIKTOK_CLIENT_KEY || '').trim();
   if (!clientKey) {
     return new Response(
       JSON.stringify({
@@ -24,9 +24,9 @@ export const onRequestGet: PagesFunction<Env> = async (context) => {
     );
   }
   const redirectUri = `https://shortsmaster.pages.dev/api/tiktok/callback`;
-  // Standard TikTok Login Kit + Video Post v2 scopes (comma-separated)
+  // Scopes matching the registered TikTok App permissions
   const requestedScope = url.searchParams.get('scope');
-  const scopes = requestedScope || 'user.info.basic,video.upload,video.publish';
+  const scopes = requestedScope || 'user.info.basic,video.upload,video.publish,user.info.stats,video.list';
 
   const authParams = new URLSearchParams({
     client_key: clientKey,
